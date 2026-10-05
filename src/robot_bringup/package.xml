@@ -1,0 +1,38 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>robot_bringup</name>
+  <version>0.1.0</version>
+  <description>Master package: launches the whole delivery robot system and loads parameters. No algorithms.</description>
+  <maintainer email="developer@todo.todo">developer</maintainer>
+  <license>Apache-2.0</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>ros2launch</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+
+  <!-- Packages launched by robot.launch.py -->
+  <exec_depend>robot_vision</exec_depend>
+  <exec_depend>robot_follower</exec_depend>
+
+  <!-- TODO Future packages
+  <exec_depend>robot_safety</exec_depend>
+  <exec_depend>robot_control</exec_depend>
+  <exec_depend>robot_bridge</exec_depend>
+  <exec_depend>robot_ui</exec_depend>
+  <exec_depend>robot_led</exec_depend>
+  <exec_depend>robot_manager</exec_depend>
+  <exec_depend>robot_interfaces</exec_depend>
+  -->
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

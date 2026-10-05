@@ -1,0 +1,20 @@
+# ~/delivery_robot_ws/src/robot_follower/config/follower.yaml
+#
+# Parameters for robot_follower nodes (package defaults).
+# NOTE: numeric values are initial test values -> TODO: tune on the real robot.
+# NOTE: keep float parameters written with a decimal point (10.0, not 10).
+# NOTE: robot_bringup/config/robot.yaml is loaded AFTER this file and may
+#       override values here (e.g. enable_motion).
+
+waypoint_follower_node:
+  ros__parameters:
+    enable_motion: false           # SAFETY: keep false until the control algorithm is verified
+    max_linear_velocity: 0.3       # [m/s]   TODO: tune
+    max_angular_velocity: 0.5      # [rad/s] TODO: tune
+    goal_tolerance: 0.3            # [m]     TODO: tune
+    control_rate_hz: 10.0          # control loop rate
+    target_timeout_sec: 1.0        # target older than this -> treated as lost -> cmd_vel = 0
+    heartbeat_period_sec: 5.0
+    tag_pose_topic: /vision/tag_pose
+    qr_result_topic: /vision/qr_result
+    cmd_vel_topic: /cmd_vel_auto

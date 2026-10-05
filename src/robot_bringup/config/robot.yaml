@@ -1,0 +1,27 @@
+# ~/delivery_robot_ws/src/robot_bringup/config/robot.yaml
+#
+# System-level (Master) parameters.
+# robot.launch.py loads this file LAST, so values here OVERRIDE
+# robot_vision/config/vision.yaml and robot_follower/config/follower.yaml.
+# Keep only system-wide switches here; package details stay in the package yaml.
+
+# Applies to every node
+/**:
+  ros__parameters:
+    use_sim_time: false
+
+camera_node:
+  ros__parameters:
+    use_camera: false          # Master switch: real camera on/off (false = mock mode)
+
+waypoint_follower_node:
+  ros__parameters:
+    enable_motion: false       # Master switch: motion on/off (SAFETY, keep false until tested)
+
+# TODO Future Nodes
+# safety_manager_node:
+#   ros__parameters:
+#     enabled: true
+# drive_controller_node:
+#   ros__parameters:
+#     enabled: true

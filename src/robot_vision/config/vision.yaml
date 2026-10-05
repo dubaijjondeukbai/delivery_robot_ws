@@ -1,0 +1,35 @@
+# ~/delivery_robot_ws/src/robot_vision/config/vision.yaml
+#
+# Parameters for robot_vision nodes (package defaults).
+# NOTE: numeric values are initial test values -> TODO: tune on the real robot.
+# NOTE: keep float parameters written with a decimal point (5.0, not 5),
+#       otherwise ROS2 reports a parameter type mismatch at startup.
+# NOTE: robot_bringup/config/robot.yaml is loaded AFTER this file and may
+#       override values here (e.g. use_camera).
+
+camera_node:
+  ros__parameters:
+    use_camera: false              # false = mock mode (no hardware access)
+    camera_id: 0                   # TODO: /dev/videoN index of the real camera
+    frame_id: camera_link
+    publish_rate_hz: 5.0           # TODO: real camera rate (e.g. 15.0 ~ 30.0)
+    image_width: 320               # TODO: real camera resolution
+    image_height: 240              # TODO: real camera resolution
+    heartbeat_period_sec: 5.0
+    image_topic: /camera/image_raw
+
+apriltag_node:
+  ros__parameters:
+    enabled: true
+    tag_size: 0.15                 # [m] TODO: measure the printed tag
+    heartbeat_period_sec: 5.0
+    image_topic: /camera/image_raw
+    tag_id_topic: /vision/tag_id
+    tag_pose_topic: /vision/tag_pose
+
+qr_node:
+  ros__parameters:
+    enabled: true
+    heartbeat_period_sec: 5.0
+    image_topic: /camera/image_raw
+    qr_result_topic: /vision/qr_result
