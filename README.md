@@ -1,6 +1,7 @@
 # Delivery Robot ROS2 Workspace (Skeleton)
 
 ROS2 기반 자율주행 배달로봇의 소프트웨어 아키텍처 **skeleton**입니다.
+
 지금 목표 : 알고리즘 완성이 아니라, **패키지 구조 / Node 구조 / Topic 연결 / Launch / Config / Build가 정상 동작하는 큰 틀**을 만들기
 각 알고리즘 자리에는 `TODO: USER IMPLEMENTATION` 블록이 있으며, 이후 직접 채워 넣습니다.
 
