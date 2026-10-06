@@ -1,0 +1,170 @@
+<?xml version="1.0" ?>
+<!--
+  ~/delivery_robot_ws/src/robot_sim/worlds/exhibition.sdf
+
+  [Sim] Simple exhibition hall (12 m x 8 m) for mapping / localization / Nav2 tests.
+
+      +y
+       ^   wall (x = -5.9 .. 5.9, y = -3.9 .. 3.9, 1.2 m high)
+       |   pillars 0.4 x 0.4 at (3, 2), (-3, -2), (3, -2.5)
+       |   booths  1.8 x 0.9 x 0.8 at (-3.5, 2.5), (0, -3)
+       |   shelf   2.4 x 0.6 x 1.2 at (-1, 3.3)
+       |   STATION_A QR board on the east wall at (5.88, 1.5, 0.45), facing -x
+       +=====> +x       robot spawns at (0, 0) facing +x
+
+  Systems loaded here are REQUIRED by the sensors in robot_description/urdf/gazebo.xacro:
+    sensors (render engine ogre2) -> gpu_lidar + camera, imu -> imu sensor, physics -> everything.
+  Textures are resolved through GZ_SIM_RESOURCE_PATH (sim.launch.py adds this package's worlds/ dir).
+  TODO: tune on real site - replace with the real floor plan once a map exists.
+-->
+<sdf version="1.9">
+  <world name="exhibition">
+
+    <!-- 250 Hz physics is plenty for a 0.5 m/s robot and keeps WSL2 CPU usage low -->
+    <physics name="default_physics" type="ignored">
+      <max_step_size>0.004</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin filename="gz-sim-imu-system" name="gz::sim::systems::Imu"/>
+
+    <scene>
+      <ambient>0.6 0.6 0.6 1</ambient>
+      <background>0.85 0.85 0.9 1</background>
+      <shadows>false</shadows>          <!-- shadows cost GPU; off for WSL2 software rendering -->
+    </scene>
+
+    <light type="directional" name="sun">
+      <cast_shadows>false</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <direction>-0.4 0.2 -1.0</direction>
+    </light>
+
+    <!-- ================= floor ================= -->
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><plane><normal>0 0 1</normal><size>40 40</size></plane></geometry>
+          <surface><friction><ode><mu>1.0</mu><mu2>1.0</mu2></ode></friction></surface>
+        </collision>
+        <visual name="visual">
+          <geometry><plane><normal>0 0 1</normal><size>40 40</size></plane></geometry>
+          <material><ambient>0.55 0.55 0.55 1</ambient><diffuse>0.6 0.6 0.6 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ================= walls (12 x 8 m interior, 0.2 thick, 1.2 high) ================= -->
+    <model name="walls">
+      <static>true</static>
+      <link name="link">
+        <!-- north / south: along x -->
+        <collision name="north_c"><pose>0 4.0 0.6 0 0 0</pose><geometry><box><size>12.2 0.2 1.2</size></box></geometry></collision>
+        <visual name="north_v"><pose>0 4.0 0.6 0 0 0</pose><geometry><box><size>12.2 0.2 1.2</size></box></geometry>
+          <material><ambient>0.8 0.8 0.78 1</ambient><diffuse>0.85 0.85 0.82 1</diffuse></material></visual>
+        <collision name="south_c"><pose>0 -4.0 0.6 0 0 0</pose><geometry><box><size>12.2 0.2 1.2</size></box></geometry></collision>
+        <visual name="south_v"><pose>0 -4.0 0.6 0 0 0</pose><geometry><box><size>12.2 0.2 1.2</size></box></geometry>
+          <material><ambient>0.8 0.8 0.78 1</ambient><diffuse>0.85 0.85 0.82 1</diffuse></material></visual>
+        <!-- east / west: along y -->
+        <collision name="east_c"><pose>6.0 0 0.6 0 0 0</pose><geometry><box><size>0.2 8.2 1.2</size></box></geometry></collision>
+        <visual name="east_v"><pose>6.0 0 0.6 0 0 0</pose><geometry><box><size>0.2 8.2 1.2</size></box></geometry>
+          <material><ambient>0.8 0.8 0.78 1</ambient><diffuse>0.85 0.85 0.82 1</diffuse></material></visual>
+        <collision name="west_c"><pose>-6.0 0 0.6 0 0 0</pose><geometry><box><size>0.2 8.2 1.2</size></box></geometry></collision>
+        <visual name="west_v"><pose>-6.0 0 0.6 0 0 0</pose><geometry><box><size>0.2 8.2 1.2</size></box></geometry>
+          <material><ambient>0.8 0.8 0.78 1</ambient><diffuse>0.85 0.85 0.82 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <!-- ================= obstacles ================= -->
+    <model name="pillar_1">
+      <static>true</static>
+      <pose>3.0 2.0 0.6 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.4 0.4 1.2</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.4 0.4 1.2</size></box></geometry>
+          <material><ambient>0.5 0.5 0.55 1</ambient><diffuse>0.5 0.5 0.55 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="pillar_2">
+      <static>true</static>
+      <pose>-3.0 -2.0 0.6 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.4 0.4 1.2</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.4 0.4 1.2</size></box></geometry>
+          <material><ambient>0.5 0.5 0.55 1</ambient><diffuse>0.5 0.5 0.55 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="pillar_3">
+      <static>true</static>
+      <pose>3.0 -2.5 0.6 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>0.4 0.4 1.2</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>0.4 0.4 1.2</size></box></geometry>
+          <material><ambient>0.5 0.5 0.55 1</ambient><diffuse>0.5 0.5 0.55 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <model name="booth_1">
+      <static>true</static>
+      <pose>-3.5 2.5 0.4 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>1.8 0.9 0.8</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>1.8 0.9 0.8</size></box></geometry>
+          <material><ambient>0.7 0.5 0.3 1</ambient><diffuse>0.75 0.55 0.35 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="booth_2">
+      <static>true</static>
+      <pose>0.0 -3.0 0.4 0 0 0.3</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>1.8 0.9 0.8</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>1.8 0.9 0.8</size></box></geometry>
+          <material><ambient>0.7 0.5 0.3 1</ambient><diffuse>0.75 0.55 0.35 1</diffuse></material></visual>
+      </link>
+    </model>
+    <model name="shelf">
+      <static>true</static>
+      <pose>-1.0 3.3 0.6 0 0 0</pose>
+      <link name="link">
+        <collision name="c"><geometry><box><size>2.4 0.6 1.2</size></box></geometry></collision>
+        <visual name="v"><geometry><box><size>2.4 0.6 1.2</size></box></geometry>
+          <material><ambient>0.35 0.45 0.6 1</ambient><diffuse>0.35 0.45 0.65 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <!-- ================= STATION_A: QR board on the east wall, facing -x =================
+         0.5 x 0.5 m plane at camera height (0.45 m). The plane's normal (+z of its own frame) is rotated
+         to point along -x (pitch -90 deg); viewed from the normal side the texture is not mirrored, and a
+         rotated QR still decodes. Texture: materials/textures/station_a_qr.png (text "STATION_A"). -->
+    <model name="station_a_qr">
+      <static>true</static>
+      <pose>5.88 1.5 0.45 0 0 0</pose>
+      <link name="link">
+        <visual name="backing">
+          <pose>0.01 0 0 0 0 0</pose>
+          <geometry><box><size>0.02 0.6 0.6</size></box></geometry>
+          <material><ambient>1 1 1 1</ambient><diffuse>1 1 1 1</diffuse></material>
+        </visual>
+        <visual name="qr">
+          <pose>-0.002 0 0 0 -1.5708 0</pose>
+          <geometry><plane><normal>0 0 1</normal><size>0.5 0.5</size></plane></geometry>
+          <material>
+            <ambient>1 1 1 1</ambient>
+            <diffuse>1 1 1 1</diffuse>
+            <pbr><metal><albedo_map>materials/textures/station_a_qr.png</albedo_map></metal></pbr>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+  </world>
+</sdf>

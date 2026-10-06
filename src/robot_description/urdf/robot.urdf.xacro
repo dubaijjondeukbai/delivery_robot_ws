@@ -1,0 +1,199 @@
+<?xml version="1.0"?>
+<!--
+  ~/delivery_robot_ws/src/robot_description/urdf/robot.urdf.xacro
+
+  [Description] delivery_robot URDF (xacro)
+
+  Expand with:   xacro robot.urdf.xacro sim:=false   (real robot: TF only)
+                 xacro robot.urdf.xacro sim:=true    (adds Gazebo sensors + drive plugin, see gazebo.xacro)
+
+  TF tree published by robot_state_publisher from this file:
+
+      base_footprint (floor, root, massless)
+        └── base_link (robot centre, axle height) ──┬── laser_link  (RPLIDAR A2M12 scan plane, world z 0.70)
+                                              ├── imu_link    (chassis centre)
+                                              ├── camera_link ── camera_optical_frame (Pi Camera Module 3 Wide, REP-103 optical)
+                                              └── wheel_{front,rear}_{left,right}_link (continuous joints)
+
+  map -> odom (AMCL/slam_toolbox) and odom -> base_link (EKF) are NOT in here: they come
+  from robot_navigation. Because this file now provides base_link -> sensor transforms,
+  robot_navigation must be launched with publish_sensor_tf:=false (robot_bringup does that).
+
+  All numbers come from robot_params.xacro.
+-->
+<robot name="delivery_robot" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:arg name="sim" default="false"/>
+
+  <xacro:include filename="$(find robot_description)/urdf/robot_params.xacro"/>
+  <xacro:include filename="$(find robot_description)/urdf/macros.xacro"/>
+
+  <!-- Shortcut: world z -> z relative to base_link -->
+  <xacro:property name="base_z" value="${wheel_radius}"/>
+
+  <material name="body_white"><color rgba="0.92 0.92 0.92 1.0"/></material>
+  <material name="frame_grey"><color rgba="0.45 0.45 0.45 1.0"/></material>
+  <material name="sensor_dark"><color rgba="0.20 0.20 0.22 1.0"/></material>
+
+  <!-- ================================================================
+       base_footprint: ROOT link, projection of base_link on the floor (REP-120).
+       It carries no inertia on purpose: robot_state_publisher's KDL parser warns about a root
+       link with inertia, so the massless footprint is the root and base_link hangs below it.
+       Gazebo lumps the fixed joint away, nothing changes for the simulation.
+       ================================================================ -->
+  <link name="base_footprint"/>
+  <joint name="base_footprint_joint" type="fixed">
+    <parent link="${base_frame}"/>
+    <child link="base_footprint"/>
+    <origin xyz="0 0 ${-base_z}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ================================================================
+       base_link: chassis + cargo box + structure as ONE rigid body
+       (origin: robot centre at wheel-axle height, x forward, z up)
+       ================================================================ -->
+  <link name="${base_frame}">
+    <!-- chassis -->
+    <visual>
+      <origin xyz="0 0 ${chassis_bottom_z + chassis_height/2 - base_z}" rpy="0 0 0"/>
+      <geometry><box size="${chassis_length} ${chassis_width} ${chassis_height}"/></geometry>
+      <material name="frame_grey"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 ${chassis_bottom_z + chassis_height/2 - base_z}" rpy="0 0 0"/>
+      <geometry><box size="${chassis_length} ${chassis_width} ${chassis_height}"/></geometry>
+    </collision>
+
+    <!-- cargo box -->
+    <visual>
+      <origin xyz="${cargo_x_offset} 0 ${cargo_bottom_z + cargo_height/2 - base_z}" rpy="0 0 0"/>
+      <geometry><box size="${cargo_length} ${cargo_width} ${cargo_height}"/></geometry>
+      <material name="body_white"/>
+    </visual>
+    <collision>
+      <origin xyz="${cargo_x_offset} 0 ${cargo_bottom_z + cargo_height/2 - base_z}" rpy="0 0 0"/>
+      <geometry><box size="${cargo_length} ${cargo_width} ${cargo_height}"/></geometry>
+    </collision>
+
+    <!-- top plate (visual only; sits inside the cargo footprint) -->
+    <visual>
+      <origin xyz="0 0 ${top_plate_z - base_z}" rpy="0 0 0"/>
+      <geometry><box size="${top_plate_length} ${top_plate_width} ${top_plate_thickness}"/></geometry>
+      <material name="frame_grey"/>
+    </visual>
+
+    <!-- four pillars (visual only; inside the cargo footprint) -->
+    <xacro:macro name="pillar_visual" params="x y">
+      <visual>
+        <origin xyz="${x} ${y} ${pillar_center_z - base_z}" rpy="0 0 0"/>
+        <geometry><cylinder radius="${pillar_radius}" length="${pillar_length}"/></geometry>
+        <material name="frame_grey"/>
+      </visual>
+    </xacro:macro>
+    <xacro:pillar_visual x="${pillar_x}"  y="${pillar_y}"/>
+    <xacro:pillar_visual x="${pillar_x}"  y="${-pillar_y}"/>
+    <xacro:pillar_visual x="${-pillar_x}" y="${pillar_y}"/>
+    <xacro:pillar_visual x="${-pillar_x}" y="${-pillar_y}"/>
+
+    <!-- handle arch bar + LiDAR mount (below the scan plane) -->
+    <visual>
+      <origin xyz="${lidar_x} ${lidar_y} ${arch_bar_z - base_z}" rpy="0 0 0"/>
+      <geometry><box size="${arch_bar_length} ${arch_bar_width} ${arch_bar_height}"/></geometry>
+      <material name="body_white"/>
+    </visual>
+    <collision>
+      <origin xyz="${lidar_x} ${lidar_y} ${arch_bar_z - base_z}" rpy="0 0 0"/>
+      <geometry><box size="${arch_bar_length} ${arch_bar_width} ${arch_bar_height}"/></geometry>
+    </collision>
+    <visual>
+      <origin xyz="${lidar_x} ${lidar_y} ${arch_bar_z + arch_bar_height/2 + lidar_mount_height/2 - base_z}" rpy="0 0 0"/>
+      <geometry><cylinder radius="${lidar_mount_radius}" length="${lidar_mount_height}"/></geometry>
+      <material name="frame_grey"/>
+    </visual>
+
+    <!-- one inertial for the whole body: a box the size of the robot body around its COM -->
+    <xacro:box_inertial mass="${body_mass}" x="${body_inertia_length}" y="${body_inertia_width}" z="${body_inertia_height}">
+      <origin xyz="0 0 ${body_com_z - base_z}" rpy="0 0 0"/>
+    </xacro:box_inertial>
+  </link>
+
+  <!-- ================================================================
+       Wheels (4x in-wheel motors, skid-steer)
+       ================================================================ -->
+  <xacro:wheel name="wheel_front_left"  x="${wheel_x}"  y="${wheel_y}"  radius="${wheel_radius}" width="${wheel_width}" mass="${wheel_mass}"/>
+  <xacro:wheel name="wheel_front_right" x="${wheel_x}"  y="${-wheel_y}" radius="${wheel_radius}" width="${wheel_width}" mass="${wheel_mass}"/>
+  <xacro:wheel name="wheel_rear_left"   x="${-wheel_x}" y="${wheel_y}"  radius="${wheel_radius}" width="${wheel_width}" mass="${wheel_mass}"/>
+  <xacro:wheel name="wheel_rear_right"  x="${-wheel_x}" y="${-wheel_y}" radius="${wheel_radius}" width="${wheel_width}" mass="${wheel_mass}"/>
+
+  <!-- ================================================================
+       LiDAR: laser_link origin = scan plane centre. Body drawn below the plane.
+       ================================================================ -->
+  <link name="${laser_frame}">
+    <visual>
+      <origin xyz="0 0 ${-lidar_body_height/2 + 0.011}" rpy="0 0 0"/>  <!-- RPLIDAR A2 scan plane ~30 mm above its base -->
+      <geometry><cylinder radius="${lidar_body_radius}" length="${lidar_body_height}"/></geometry>
+      <material name="sensor_dark"/>
+    </visual>
+    <xacro:cylinder_inertial_z mass="${lidar_mass}" radius="${lidar_body_radius}" length="${lidar_body_height}">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+    </xacro:cylinder_inertial_z>
+  </link>
+  <joint name="laser_joint" type="fixed">
+    <parent link="${base_frame}"/>
+    <child link="${laser_frame}"/>
+    <origin xyz="${lidar_x} ${lidar_y} ${lidar_z - base_z}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ================================================================
+       IMU
+       ================================================================ -->
+  <link name="${imu_frame}">
+    <visual>
+      <geometry><box size="0.02 0.02 0.005"/></geometry>
+      <material name="sensor_dark"/>
+    </visual>
+    <xacro:box_inertial mass="0.01" x="0.02" y="0.02" z="0.005">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+    </xacro:box_inertial>
+  </link>
+  <joint name="imu_joint" type="fixed">
+    <parent link="${base_frame}"/>
+    <child link="${imu_frame}"/>
+    <origin xyz="${imu_x} ${imu_y} ${imu_z - base_z}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ================================================================
+       Front camera: camera_link (x forward) + camera_optical_frame (z forward)
+       ================================================================ -->
+  <link name="${camera_frame}">
+    <visual>
+      <origin xyz="${-camera_board_depth/2} 0 0" rpy="0 0 0"/>   <!-- lens at the link origin, board behind it -->
+      <geometry><box size="${camera_board_depth} ${camera_board_width} ${camera_board_height}"/></geometry>
+      <material name="sensor_dark"/>
+    </visual>
+    <xacro:box_inertial mass="0.01" x="${camera_board_depth}" y="${camera_board_width}" z="${camera_board_height}">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+    </xacro:box_inertial>
+  </link>
+  <joint name="camera_joint" type="fixed">
+    <parent link="${base_frame}"/>
+    <child link="${camera_frame}"/>
+    <origin xyz="${camera_x} ${camera_y} ${camera_z - base_z}" rpy="0 ${camera_pitch} 0"/>
+  </joint>
+
+  <!-- REP-103 optical frame: x right, y down, z forward (what the images are stamped with) -->
+  <link name="${camera_optical_frame}"/>
+  <joint name="camera_optical_joint" type="fixed">
+    <parent link="${camera_frame}"/>
+    <child link="${camera_optical_frame}"/>
+    <origin xyz="0 0 0" rpy="${-pi/2} 0 ${-pi/2}"/>
+  </joint>
+
+  <!-- ================================================================
+       Gazebo: sensors, friction, drive + joint-state plugins (simulation only)
+       ================================================================ -->
+  <xacro:if value="$(arg sim)">
+    <xacro:include filename="$(find robot_description)/urdf/gazebo.xacro"/>
+  </xacro:if>
+
+</robot>

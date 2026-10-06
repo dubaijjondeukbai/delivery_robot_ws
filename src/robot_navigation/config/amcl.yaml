@@ -1,0 +1,109 @@
+# ~/delivery_robot_ws/src/robot_navigation/config/amcl.yaml
+#
+# Parameters for nav2_map_server + nav2_amcl (localization mode, MODE B).
+# NOTE: numeric values are initial values -> TODO: tune on the real robot.
+# NOTE: keep float parameters written with a decimal point (1.0, not 1) and integers
+#       (min_particles: 500) without one.
+# NOTE: yaml_filename is filled by the launch argument `map`; scan_topic/map_topic are
+#       relative and remapped by the launch.
+
+# =============================================================================
+# map_server + AMCL — LOCALIZATION MODE
+#
+#   map.yaml/map.pgm ─► map_server ─► /map ─┐
+#   /scan ──────────────────────────────────┼─► amcl ─► TF map -> odom
+#   odom->base_link TF (EKF) ───────────────┘        └─► /amcl_pose (PoseWithCovarianceStamped)
+#
+# Both nodes are lifecycle nodes driven by lifecycle_manager_localization.
+# The map file is passed by the launch argument map:=... (parameter yaml_filename).
+#
+# SAFETY: AMCL only publishes a transform and a pose estimate. Nothing in here commands motion.
+# When AMCL cannot localize, Nav2's TF lookups time out -> the controller stops publishing ->
+# velocity_smoother publishes zero after velocity_timeout -> robot_safety sees no valid command.
+# Downstream (robot_safety) should additionally watch /amcl_pose covariance and age.
+#
+# Every value: TODO: tune on real robot.
+# =============================================================================
+map_server:
+  ros__parameters:
+    use_sim_time: false
+    yaml_filename: ""              # overridden by the launch argument `map`
+    topic_name: map                # relative; remapped to the wiring file's map topic
+    frame_id: map
+
+amcl:
+  ros__parameters:
+    use_sim_time: false
+
+    # ---- frames / topics ----
+    base_frame_id: base_link
+    odom_frame_id: odom
+    global_frame_id: map
+    scan_topic: scan               # relative; remapped by the launch
+    map_topic: map
+    tf_broadcast: true             # publish map -> odom (the whole point of this node)
+    # map->odom is published with this future offset so TF consumers never see a gap between
+    # AMCL updates. 1.0 s is the Nav2 default and tolerates Pi 5 scheduling jitter; a smaller value
+    # (0.3-0.5) makes TF errors visible sooner but produces "extrapolation" failures on a loaded CPU.
+    transform_tolerance: 1.0
+
+    # ---- initial pose ----
+    set_initial_pose: false        # false: wait for RViz "2D Pose Estimate" or a /initialpose message.
+    always_reset_initial_pose: false
+    initial_pose:                  # used only when set_initial_pose: true (e.g. robot always boots at the dock)
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      yaw: 0.0
+    first_map_only: false
+    save_pose_rate: 0.5            # Hz. Last pose is kept as a parameter so a restart can reuse it.
+
+    # ---- particle filter ----
+    # More particles = more robust to a bad initial guess / ambiguous places, more CPU (linear).
+    # 500..2000 is the Nav2 default band and runs comfortably on a Pi 5 at 10 Hz scans.
+    min_particles: 500
+    max_particles: 2000
+    pf_err: 0.05                   # KLD-sampling error bound: the filter shrinks towards min_particles when converged.
+    pf_z: 0.99
+    # The filter only updates after the robot moved this much (odometry). Smaller values update more
+    # often (more CPU, less drift between updates). 0.1 m / 0.1 rad (~6 deg) is tighter than the
+    # 0.25/0.2 default because a slow delivery robot should not drift 25 cm between corrections.
+    update_min_d: 0.10
+    update_min_a: 0.10
+    resample_interval: 1           # resample on every update; 2 would keep more particle diversity.
+    # Augmented-MCL recovery (random particle injection when the measurement likelihood collapses).
+    # Kept OFF (0.0) deliberately: on a 30 kg robot a sudden pose jump from random particles is
+    # worse than a visible "lost" state that the operator re-initializes. Classic values: 0.001 / 0.1.
+    recovery_alpha_slow: 0.0
+    recovery_alpha_fast: 0.0
+
+    # ---- motion model (how much the odometry is trusted) ----
+    # alpha1: rotation noise caused by rotation      alpha2: rotation noise caused by translation
+    # alpha3: translation noise caused by translation alpha4: translation noise caused by rotation
+    # alpha5: translation noise (strafe), OmniMotionModel only.
+    # 0.2 everywhere is the Nav2 default: moderately pessimistic, which is right for EKF odometry on
+    # an unknown drivetrain. Lower (0.05-0.1) once the odometry proves good; raise if the particle
+    # cloud collapses and then loses the robot in turns.
+    robot_model_type: nav2_amcl::DifferentialMotionModel   # also appropriate for Ackermann/skid bases that accept Twist
+    alpha1: 0.2
+    alpha2: 0.2
+    alpha3: 0.2
+    alpha4: 0.2
+    alpha5: 0.2
+
+    # ---- sensor model ----
+    laser_model_type: likelihood_field   # fast, smooth, robust to small unmodelled obstacles (people, carts)
+    laser_min_range: -1.0          # -1 = use the LaserScan's own range_min
+    laser_max_range: 12.0          # m. TODO: tune on real robot. Beams beyond this are ignored (A2-class LiDAR ~12 m).
+    laser_likelihood_max_dist: 2.0 # m. Max distance to search for a map obstacle around a beam end-point.
+    max_beams: 60                  # Beams used per update. 60 of ~400-800 is plenty and cheap on the Pi.
+    sigma_hit: 0.2                 # m. Measurement noise of a "hit". 0.2 is forgiving for a 5 cm map.
+    z_hit: 0.5                     # Mixture weights (hit + rand should dominate for likelihood_field).
+    z_rand: 0.5
+    z_short: 0.05
+    z_max: 0.05
+    lambda_short: 0.1
+    do_beamskip: false             # Beam skipping helps in heavily changed environments; keep off until needed.
+    beam_skip_distance: 0.5
+    beam_skip_error_threshold: 0.9
+    beam_skip_threshold: 0.3

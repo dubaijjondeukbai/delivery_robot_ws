@@ -1,0 +1,92 @@
+# ~/delivery_robot_ws/src/robot_navigation/config/slam.yaml
+#
+# Parameters for slam_toolbox (mapping mode, MODE A).
+# NOTE: numeric values are generic 2D-LiDAR values -> TODO: tune on the real robot.
+# NOTE: keep float parameters written with a decimal point (5.0, not 5).
+# NOTE: scan_topic is relative (scan); the launch remaps it to localization.yaml topics.scan.
+
+# =============================================================================
+# slam_toolbox (online, asynchronous) — MAPPING MODE only
+#
+#   /scan ──────────────┐
+#   /odom (EKF) ─TF─────┼─► slam_toolbox ─► /map (nav_msgs/OccupancyGrid, transient-local)
+#   odom->base_link TF ─┘               └─► TF map -> odom
+#
+# The node is a lifecycle node and is driven by lifecycle_manager_slam (mapping.launch.py).
+# Generic 2D LiDAR values: the exact LiDAR is not final, so nothing here assumes a model
+# beyond "360 deg, ~12 m, 10 Hz" (RPLIDAR A2-class). TODO: tune on real robot.
+#
+# Saving: see README.md — map_saver_cli for map.yaml/map.pgm (AMCL) and
+#         /slam_toolbox/serialize_map for the pose graph (editing / continuing a map later).
+# =============================================================================
+slam_toolbox:
+  ros__parameters:
+    use_sim_time: false
+
+    # ---- solver (defaults recommended by slam_toolbox) ----
+    solver_plugin: solver_plugins::CeresSolver
+    ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
+    ceres_preconditioner: SCHUR_JACOBI
+    ceres_trust_strategy: LEVENBERG_MARQUARDT
+    ceres_dogleg_type: TRADITIONAL_DOGLEG
+    ceres_loss_function: None
+
+    # ---- frames / topics ----
+    odom_frame: odom
+    map_frame: map
+    base_frame: base_link          # slam_toolbox default is base_footprint; our tree uses base_link
+    scan_topic: scan               # relative; remapped to the wiring file's scan topic by the launch
+    use_map_saver: true            # exposes /slam_toolbox/save_map and /slam_toolbox/serialize_map services
+    mode: mapping                  # "localization" is the slam_toolbox alternative to AMCL (see README)
+
+    # ---- behaviour ----
+    debug_logging: false
+    throttle_scans: 1              # use every scan (set 2 to halve CPU on a slow Pi)
+    transform_publish_period: 0.02 # s. map->odom publish period (50 Hz). 0 disables.
+    map_update_interval: 5.0       # s. /map (re)publish interval. Only affects visualization/saving, not accuracy.
+    resolution: 0.05               # m/cell. 5 cm is the Nav2 convention for indoor robots.
+    min_laser_range: 0.0           # m. Raise (e.g. 0.15) if the robot body shows up as obstacles.
+    max_laser_range: 12.0          # m. TODO: tune on real robot — RPLIDAR A2-class ~12 m; use the datasheet value.
+    minimum_time_interval: 0.5     # s. Minimum time between processed scans.
+    transform_timeout: 0.2         # s. How long to wait for odom->base_link.
+    tf_buffer_duration: 30.0       # s. Large buffer helps when loop closures re-process older scans.
+    stack_size_to_use: 40000000    # bytes. Needed by the serializer for large maps.
+    enable_interactive_mode: false # true costs CPU; only for hand-editing the pose graph in RViz.
+
+    # ---- scan matching / graph construction (karto) ----
+    use_scan_matching: true
+    use_scan_barycenter: true
+    minimum_travel_distance: 0.3   # m. A new node is added after this much motion (default 0.5; smaller = denser map, more CPU).
+    minimum_travel_heading: 0.3    # rad.
+    scan_buffer_size: 10
+    scan_buffer_maximum_scan_distance: 10.0
+    link_match_minimum_response_fine: 0.1
+    link_scan_maximum_distance: 1.5
+    loop_search_maximum_distance: 3.0
+    do_loop_closing: true          # Essential for a consistent map of a loop-shaped exhibition hall.
+    loop_match_minimum_chain_size: 10
+    loop_match_maximum_variance_coarse: 3.0
+    loop_match_minimum_response_coarse: 0.35
+    loop_match_minimum_response_fine: 0.45
+
+    # ---- correlation parameters ----
+    correlation_search_space_dimension: 0.5
+    correlation_search_space_resolution: 0.01
+    correlation_search_space_smear_deviation: 0.1
+
+    # ---- loop closure search parameters ----
+    loop_search_space_dimension: 8.0
+    loop_search_space_resolution: 0.05
+    loop_search_space_smear_deviation: 0.03
+
+    # ---- scan matcher parameters ----
+    distance_variance_penalty: 0.5
+    angle_variance_penalty: 1.0
+    fine_search_angle_offset: 0.00349
+    coarse_search_angle_offset: 0.349
+    coarse_angle_resolution: 0.0349
+    minimum_angle_penalty: 0.9
+    minimum_distance_penalty: 0.5
+    use_response_expansion: true
+    min_pass_through: 2
+    occupancy_threshold: 0.1

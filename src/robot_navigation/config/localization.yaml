@@ -1,0 +1,70 @@
+# ~/delivery_robot_ws/src/robot_navigation/config/localization.yaml
+#
+# "Wiring" file for robot_navigation: topic names, sensor mounting TF, launch defaults.
+# NOTE: this is NOT a ROS parameter file (no ros__parameters). The launch files read it
+#       with PyYAML; see the explanation block below.
+# NOTE: numeric values (sensor offsets) are placeholders -> TODO: tune on the real robot.
+
+# =============================================================================
+# robot_navigation "wiring" file
+#
+# This is NOT a ROS parameter file. The three launch files read it with PyYAML
+# and turn it into launch-argument defaults, topic remappings and the static
+# sensor transforms. Change topic names HERE (or override per run with
+# ros2 launch ... scan_topic:=/my/scan); the node parameter files
+# (ekf.yaml, slam.yaml, amcl.yaml, nav2.yaml) only use the *relative* names
+# scan / odom / map / wheel/odom / imu/data, which the launch files remap.
+#
+#   LiDAR driver ──/scan──────────┐
+#   robot_bridge ──/wheel/odom────┼──► ekf_filter_node ──/odom (+ odom->base_link TF)
+#   IMU driver   ──/imu/data──────┘             │
+#                                               ▼
+#   map_server ──/map──► amcl (map->odom TF) ◄──/scan
+#                                               │
+#                                               ▼
+#                 Nav2 ──/cmd_vel_auto──► robot_safety ──/cmd_vel_safe──► robot_control ──► robot_bridge ──► STM32
+# =============================================================================
+
+topics:
+  scan: /scan                 # sensor_msgs/LaserScan from the LiDAR driver
+  wheel_odom: /wheel/odom     # nav_msgs/Odometry, RAW wheel odometry from robot_bridge (must NOT broadcast TF)
+  imu: /imu/data              # sensor_msgs/Imu, REP-103 (x forward, y left, z up), gyro z = +yaw rate
+  odom: /odom                 # EKF output. Nothing else may publish this topic or the odom->base_link TF
+  map: /map                   # nav_msgs/OccupancyGrid from map_server (localization) or slam_toolbox (mapping)
+  # Nav2 velocity output. With motion_enabled:=true this goes to robot_safety; with the default
+  # motion_enabled:=false it goes to cmd_vel_dry_run, which nothing consumes (planning only, no motion).
+  cmd_vel_out: /cmd_vel_auto
+  cmd_vel_dry_run: /cmd_vel_nav_dry_run
+
+# REP-105 frame names. They are also written into ekf.yaml / slam.yaml / amcl.yaml / nav2.yaml
+# (frames are parameters, not remappable). If you rename one, grep all four files.
+frames:
+  map: map
+  odom: odom
+  base_link: base_link
+  laser: laser_link
+  imu: imu_link
+
+# Static transforms base_link -> sensor. Required by AMCL, slam_toolbox and the costmaps.
+# Set publish: false as soon as robot_bringup publishes them (URDF + robot_state_publisher),
+# otherwise two publishers fight over the same frame.
+sensor_tf:
+  publish: true
+  laser:                      # TODO: measure on the real robot (metres / radians, base_link origin = robot centre on the floor)
+    x: 0.15
+    y: 0.0
+    z: 0.25
+    roll: 0.0
+    pitch: 0.0
+    yaw: 0.0                  # RPLIDAR A2: yaw = 3.14159 if the cable/notch points forward and scans appear mirrored
+  imu:                        # TODO: measure on the real robot
+    x: 0.0
+    y: 0.0
+    z: 0.10
+    roll: 0.0
+    pitch: 0.0
+    yaw: 0.0
+
+defaults:
+  use_sim_time: false
+  autostart: true             # lifecycle managers bring map_server/amcl/Nav2 to ACTIVE automatically

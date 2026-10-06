@@ -1,0 +1,66 @@
+# ~/delivery_robot_ws/src/robot_sim/config/bridge.yaml
+#
+# ros_gz_bridge parameter_bridge configuration: which Gazebo topics become which ROS 2 topics.
+# gz-side names are the <topic> values in robot_description/urdf/gazebo.xacro; ROS-side names are the
+# ones the rest of the workspace expects (robot_navigation/config/localization.yaml, robot_vision).
+#
+# Direction: GZ_TO_ROS = sensor data out of the simulator, ROS_TO_GZ = commands into the simulator.
+# Only the drive command (last entry) goes INTO the simulator. Its ROS topic
+# (/model/delivery_robot/cmd_vel) is remapped by sim.launch.py to the launch argument cmd_vel_topic
+# (default /cmd_vel_safe) so the simulated base is fed from the same point of the safety chain as
+# the real STM32 (robot_safety -> robot_control -> robot_bridge). The plugin's odom->base_link TF
+# (/model/delivery_robot/tf) is deliberately NOT bridged: the EKF owns that transform.
+
+- ros_topic_name: "/clock"
+  gz_topic_name: "/clock"
+  ros_type_name: "rosgraph_msgs/msg/Clock"
+  gz_type_name: "gz.msgs.Clock"
+  direction: GZ_TO_ROS
+
+- ros_topic_name: "/scan"
+  gz_topic_name: "/scan"
+  ros_type_name: "sensor_msgs/msg/LaserScan"
+  gz_type_name: "gz.msgs.LaserScan"
+  direction: GZ_TO_ROS
+
+- ros_topic_name: "/imu/data"
+  gz_topic_name: "/imu/data"
+  ros_type_name: "sensor_msgs/msg/Imu"
+  gz_type_name: "gz.msgs.IMU"
+  direction: GZ_TO_ROS
+
+- ros_topic_name: "/camera/image_raw"
+  gz_topic_name: "/camera/image_raw"
+  ros_type_name: "sensor_msgs/msg/Image"
+  gz_type_name: "gz.msgs.Image"
+  direction: GZ_TO_ROS
+
+- ros_topic_name: "/camera/camera_info"
+  gz_topic_name: "/camera/camera_info"
+  ros_type_name: "sensor_msgs/msg/CameraInfo"
+  gz_type_name: "gz.msgs.CameraInfo"
+  direction: GZ_TO_ROS
+
+# raw wheel odometry of the drive plugin -> EKF input (frame_id odom, child base_link).
+# The plain odometry topic is used: on the Gazebo shipped with Lyrical the DiffDrive plugin advertises
+# /model/<name>/odometry_with_covariance but never publishes on it (verified 2026-10-06), so bridging it
+# gives an empty /wheel/odom. Zero covariances are replaced by a small epsilon inside the EKF.
+- ros_topic_name: "/wheel/odom"
+  gz_topic_name: "/model/delivery_robot/odometry"
+  ros_type_name: "nav_msgs/msg/Odometry"
+  gz_type_name: "gz.msgs.Odometry"
+  direction: GZ_TO_ROS
+
+# wheel joint angles -> robot_state_publisher (wheel TFs in RViz)
+- ros_topic_name: "/joint_states"
+  gz_topic_name: "/joint_states"
+  ros_type_name: "sensor_msgs/msg/JointState"
+  gz_type_name: "gz.msgs.Model"
+  direction: GZ_TO_ROS
+
+# velocity command INTO the simulated base (ROS topic remapped in sim.launch.py)
+- ros_topic_name: "/model/delivery_robot/cmd_vel"
+  gz_topic_name: "/model/delivery_robot/cmd_vel"
+  ros_type_name: "geometry_msgs/msg/Twist"
+  gz_type_name: "gz.msgs.Twist"
+  direction: ROS_TO_GZ

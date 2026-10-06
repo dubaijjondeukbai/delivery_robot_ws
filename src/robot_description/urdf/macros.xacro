@@ -1,0 +1,77 @@
+<?xml version="1.0"?>
+<!--
+  ~/delivery_robot_ws/src/robot_description/urdf/macros.xacro
+
+  Reusable xacro macros: inertia of simple solids and the wheel link + joint.
+  Analytic inertias (not Fusion's) are used on purpose: a wrong inertia from a
+  half-assigned CAD material is the most common reason a simulated robot jitters
+  or flips, and these primitives match the measured dimensions.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- Solid box: x = length, y = width, z = height, centred at the given origin -->
+  <xacro:macro name="box_inertial" params="mass x y z *origin">
+    <inertial>
+      <xacro:insert_block name="origin"/>
+      <mass value="${mass}"/>
+      <inertia ixx="${mass / 12.0 * (y*y + z*z)}" ixy="0.0" ixz="0.0"
+               iyy="${mass / 12.0 * (x*x + z*z)}" iyz="0.0"
+               izz="${mass / 12.0 * (x*x + y*y)}"/>
+    </inertial>
+  </xacro:macro>
+
+  <!-- Solid cylinder with its axis along +Z of the inertial frame -->
+  <xacro:macro name="cylinder_inertial_z" params="mass radius length *origin">
+    <inertial>
+      <xacro:insert_block name="origin"/>
+      <mass value="${mass}"/>
+      <inertia ixx="${mass / 12.0 * (3.0*radius*radius + length*length)}" ixy="0.0" ixz="0.0"
+               iyy="${mass / 12.0 * (3.0*radius*radius + length*length)}" iyz="0.0"
+               izz="${mass / 2.0 * radius*radius}"/>
+    </inertial>
+  </xacro:macro>
+
+  <!-- Solid cylinder with its axis along +Y of the inertial frame (a wheel on a y-axle) -->
+  <xacro:macro name="cylinder_inertial_y" params="mass radius length *origin">
+    <inertial>
+      <xacro:insert_block name="origin"/>
+      <mass value="${mass}"/>
+      <inertia ixx="${mass / 12.0 * (3.0*radius*radius + length*length)}" ixy="0.0" ixz="0.0"
+               iyy="${mass / 2.0 * radius*radius}" iyz="0.0"
+               izz="${mass / 12.0 * (3.0*radius*radius + length*length)}"/>
+    </inertial>
+  </xacro:macro>
+
+  <!--
+    Driven wheel: link + continuous joint on a y-axle.
+      name : wheel_front_left ... -> link wheel_front_left_link, joint wheel_front_left_joint
+      x, y : wheel centre relative to base_link (z = 0 because base_link is at axle height)
+    The cylinder primitive is created along z, so visual/collision are rolled by 90 deg
+    about x to put the axle on y. The joint axis is +y: a positive velocity rolls the
+    robot forward (+x) on both sides, which is what the Gazebo DiffDrive plugin expects.
+  -->
+  <xacro:macro name="wheel" params="name x y radius width mass">
+    <link name="${name}_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+        <geometry><cylinder radius="${radius}" length="${width}"/></geometry>
+        <material name="wheel_black"><color rgba="0.15 0.15 0.15 1.0"/></material>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+        <geometry><cylinder radius="${radius}" length="${width}"/></geometry>
+      </collision>
+      <xacro:cylinder_inertial_y mass="${mass}" radius="${radius}" length="${width}">
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+      </xacro:cylinder_inertial_y>
+    </link>
+    <joint name="${name}_joint" type="continuous">
+      <parent link="base_link"/>
+      <child link="${name}_link"/>
+      <origin xyz="${x} ${y} 0" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+      <dynamics damping="0.1" friction="0.1"/>
+    </joint>
+  </xacro:macro>
+
+</robot>

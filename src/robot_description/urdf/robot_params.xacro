@@ -1,0 +1,153 @@
+<?xml version="1.0"?>
+<!--
+  ~/delivery_robot_ws/src/robot_description/urdf/robot_params.xacro
+
+  ALL numbers of the robot model live here (metres, kilograms, radians).
+  robot.urdf.xacro / gazebo.xacro only reference these properties, so fixing a
+  dimension is a one-line change in this file.
+
+  Source of the dimensions: Fusion 360 OBJ export "전체_배치.obj" (2026-10-05, mm, Z-up,
+  forward = +X) and the design sketch (LiDAR on top of the handle arch, one front camera:
+  Raspberry Pi Camera Module 3 Wide).
+  Values marked TODO were NOT in the CAD export and must be measured on the real robot.
+
+  Convention: "world z" below means height above the floor with the robot standing on
+  its wheels. base_link sits at the wheel-axle height (z = wheel_radius), so every
+  link offset is written as (world z - wheel_radius) in robot.urdf.xacro.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- ============================================================
+       Chassis (OBJ Body1: 600 x 300 x 100 mm, z 50..150 mm)
+       ============================================================ -->
+  <xacro:property name="chassis_length"   value="0.60"/>   <!-- x -->
+  <xacro:property name="chassis_width"    value="0.30"/>   <!-- y (wheels stick out on both sides) -->
+  <xacro:property name="chassis_height"   value="0.10"/>   <!-- z -->
+  <xacro:property name="chassis_bottom_z" value="0.05"/>   <!-- world z of the chassis underside -->
+
+  <!-- ============================================================
+       Wheels x4, NURI WA172E 24 V in-wheel motors
+       (OBJ Body2*: diameter 171.3 mm, width 51.8 mm, centres at x = +-200, y = +-275, axle z = 86 mm)
+       All four wheels are driven -> skid-steer (no steering mechanism in the CAD).
+       ============================================================ -->
+  <xacro:property name="wheel_radius" value="0.0857"/>
+  <xacro:property name="wheel_width"  value="0.052"/>
+  <xacro:property name="wheel_x"      value="0.200"/>      <!-- half wheelbase  (wheelbase 0.40 m) -->
+  <xacro:property name="wheel_y"      value="0.275"/>      <!-- half track      (track     0.55 m) -->
+  <xacro:property name="wheel_mass"   value="2.5"/>        <!-- TODO: in-wheel motor + tyre from the WA172E datasheet -->
+
+  <!-- Motor limits. TODO: fill rated speed from the NURI WA172E 24 V datasheet.
+       max linear speed = rpm / 60 * 2*pi * wheel_radius  (150 rpm -> 1.35 m/s).
+       The simulated base is clamped to these; Nav2 (nav2.yaml) commands far less (0.3 m/s). -->
+  <xacro:property name="wheel_max_rpm"          value="150.0"/>
+  <xacro:property name="max_linear_velocity"    value="${wheel_max_rpm / 60.0 * 2.0 * pi * wheel_radius}"/>
+  <xacro:property name="max_angular_velocity"   value="${2.0 * max_linear_velocity / (2.0 * wheel_y)}"/>
+  <xacro:property name="max_linear_acceleration" value="1.0"/>   <!-- m/s^2, TODO: tune on real robot -->
+  <xacro:property name="max_angular_acceleration" value="2.0"/>  <!-- rad/s^2 -->
+
+  <!-- Wheel/floor friction used by Gazebo. mu1 along rolling direction, mu2 lateral.
+       Lower mu2 lets a skid-steer base turn without juddering. TODO: tune on real robot -->
+  <xacro:property name="wheel_mu1" value="1.0"/>
+  <xacro:property name="wheel_mu2" value="0.5"/>
+
+  <!-- ============================================================
+       Cargo box (OBJ Body14: 502 x 570 x 380 mm, centre (-10, 0, 410) mm -> z 220..600 mm)
+       and the structure that carries it (OBJ: 4 pillars d8 x 300 mm at (+-200, +-240), top plate 440 x 520 x 3 mm)
+       The pillars sit inside the cargo footprint, so they get no collision of their own.
+       ============================================================ -->
+  <xacro:property name="cargo_length"   value="0.502"/>
+  <xacro:property name="cargo_width"    value="0.570"/>
+  <xacro:property name="cargo_height"   value="0.380"/>
+  <xacro:property name="cargo_x_offset" value="-0.010"/>
+  <xacro:property name="cargo_bottom_z" value="0.220"/>    <!-- world z -->
+  <xacro:property name="pillar_radius"  value="0.004"/>
+  <xacro:property name="pillar_length"  value="0.300"/>
+  <xacro:property name="pillar_x"       value="0.200"/>
+  <xacro:property name="pillar_y"       value="0.240"/>
+  <xacro:property name="pillar_center_z" value="0.370"/>   <!-- world z -->
+  <xacro:property name="top_plate_length" value="0.440"/>
+  <xacro:property name="top_plate_width"  value="0.520"/>
+  <xacro:property name="top_plate_thickness" value="0.003"/>
+  <xacro:property name="top_plate_z"    value="0.4715"/>   <!-- world z -->
+
+  <!-- Handle arch across the top of the cargo box (design sketch, NOT in the OBJ) with the LiDAR on top.
+       Modelled as one bar across y plus a short mount; keep it BELOW the LiDAR scan plane
+       (rendering sensors see visual geometry, so anything at scan height would block rays). -->
+  <xacro:property name="arch_bar_length" value="0.060"/>   <!-- x -->
+  <xacro:property name="arch_bar_width"  value="0.600"/>   <!-- y, spans the box -->
+  <xacro:property name="arch_bar_height" value="0.050"/>
+  <xacro:property name="arch_bar_z"      value="0.625"/>   <!-- world z of the bar centre (box top 0.600) -->
+  <xacro:property name="lidar_mount_radius" value="0.030"/>
+  <xacro:property name="lidar_mount_height" value="0.020"/>
+
+  <!-- ============================================================
+       Masses (total 35 kg as stated; split is an estimate -> TODO: weigh the real robot)
+       ============================================================ -->
+  <xacro:property name="body_mass"  value="25.0"/>        <!-- chassis + battery/electronics + cargo box + structure + sensors -->
+  <xacro:property name="body_com_z" value="0.28"/>         <!-- world z of the body centre of mass (battery low in the chassis) -->
+  <xacro:property name="body_inertia_length" value="0.60"/>
+  <xacro:property name="body_inertia_width"  value="0.57"/>
+  <xacro:property name="body_inertia_height" value="0.55"/>
+
+  <!-- ============================================================
+       Sensors (poses in world coordinates; NOT in the OBJ -> TODO: measure on the real robot)
+       ============================================================ -->
+  <!-- RPLIDAR A2M12 on top of the handle arch: body d76 x 41 mm, scan plane ~0.03 m above its base.
+       The scan plane must be the highest thing on the robot (360 deg unobstructed). -->
+  <xacro:property name="lidar_x" value="0.0"/>
+  <xacro:property name="lidar_y" value="0.0"/>
+  <xacro:property name="lidar_z" value="0.700"/>           <!-- world z of the scan plane (laser_link origin) -->
+  <xacro:property name="lidar_body_radius" value="0.038"/>
+  <xacro:property name="lidar_body_height" value="0.041"/>
+  <xacro:property name="lidar_mass" value="0.19"/>
+  <xacro:property name="lidar_samples"    value="720"/>    <!-- 0.5 deg; TODO: match the driver's angular resolution -->
+  <xacro:property name="lidar_rate_hz"    value="10.0"/>
+  <xacro:property name="lidar_range_min"  value="0.15"/>
+  <xacro:property name="lidar_range_max"  value="12.0"/>
+  <xacro:property name="lidar_noise_std"  value="0.01"/>
+
+  <!-- Front camera: Raspberry Pi Camera Module 3 Wide (Sony IMX708, 25 x 24 x 11.5 mm, CSI, autofocus),
+       one, forward looking, in the middle of the front face of the cargo box.
+       camera_link follows REP-103 (x forward); camera_optical_frame (z forward, x right, y down)
+       is what the images are stamped with. -->
+  <xacro:property name="camera_x"     value="0.260"/>      <!-- cargo front face is at x = +0.241 -->
+  <xacro:property name="camera_y"     value="0.0"/>
+  <xacro:property name="camera_z"     value="0.450"/>      <!-- world z -->
+  <xacro:property name="camera_pitch" value="0.0"/>        <!-- rad, positive = looking down -->
+  <xacro:property name="camera_board_depth"  value="0.0115"/>   <!-- x -->
+  <xacro:property name="camera_board_width"  value="0.025"/>    <!-- y -->
+  <xacro:property name="camera_board_height" value="0.024"/>    <!-- z -->
+  <xacro:property name="camera_width"  value="640"/>
+  <xacro:property name="camera_height" value="480"/>
+  <!-- Module 3 Wide: 102 deg horizontal FOV on the native 16:9 sensor. libcamera crops a 4:3 output
+       horizontally, so 640x480 sees 2*atan(tan(51 deg)*0.75) = ~85.6 deg = 1.494 rad. Use 1.780 rad with 640x360.
+       The lens has strong barrel distortion that Gazebo does not model. TODO: replace by calibrated values -->
+  <xacro:property name="camera_hfov"   value="1.494"/>
+  <xacro:property name="camera_rate_hz" value="15.0"/>     <!-- same as camera_node publish_rate_hz -->
+
+  <!-- IMU in the chassis centre. REP-103 axes (x forward, y left, z up). -->
+  <xacro:property name="imu_x" value="0.0"/>
+  <xacro:property name="imu_y" value="0.0"/>
+  <xacro:property name="imu_z" value="0.100"/>             <!-- world z -->
+  <xacro:property name="imu_rate_hz" value="100.0"/>
+
+  <!-- ============================================================
+       Frame / topic names (must match robot_navigation/config/localization.yaml and robot_vision)
+       ============================================================ -->
+  <xacro:property name="base_frame"   value="base_link"/>
+  <xacro:property name="laser_frame"  value="laser_link"/>
+  <xacro:property name="imu_frame"    value="imu_link"/>
+  <xacro:property name="camera_frame" value="camera_link"/>
+  <xacro:property name="camera_optical_frame" value="camera_optical_frame"/>
+  <xacro:property name="scan_topic"        value="/scan"/>
+  <xacro:property name="imu_topic"         value="/imu/data"/>
+  <xacro:property name="image_topic"       value="/camera/image_raw"/>
+  <xacro:property name="camera_info_topic" value="/camera/camera_info"/>
+  <xacro:property name="joint_states_topic" value="/joint_states"/>
+  <!-- Gazebo-side topics of the drive plugin (bridged in robot_sim/config/bridge.yaml) -->
+  <xacro:property name="gz_cmd_vel_topic" value="/model/delivery_robot/cmd_vel"/>
+  <xacro:property name="gz_odom_topic"    value="/model/delivery_robot/odometry"/>
+  <xacro:property name="gz_odom_cov_topic" value="/model/delivery_robot/odometry_with_covariance"/>
+  <xacro:property name="gz_tf_topic"      value="/model/delivery_robot/tf"/>
+
+</robot>

@@ -1,0 +1,105 @@
+# ~/delivery_robot_ws/src/robot_navigation/config/ekf.yaml
+#
+# Parameters for robot_localization ekf_node (odom -> base_link).
+# NOTE: numeric values are initial values -> TODO: tune on the real robot.
+# NOTE: keep float parameters written with a decimal point (30.0, not 30).
+# NOTE: topic names are relative on purpose (wheel/odom, imu/data); the launch remaps
+#       them to the names in localization.yaml. robot_bringup/config/robot.yaml is NOT
+#       loaded by the navigation launches (use the launch arguments instead).
+
+# =============================================================================
+# robot_localization ekf_node  — wheel odometry + IMU fusion
+#
+#   /wheel/odom (nav_msgs/Odometry) ─┐
+#                                    ├─► ekf_filter_node ─► /odom (nav_msgs/Odometry)
+#   /imu/data   (sensor_msgs/Imu)  ──┘                    └─► TF  odom -> base_link
+#
+# Role in the TF tree (REP-105):
+#   map -> odom       : AMCL (localization mode) / slam_toolbox (mapping mode)
+#   odom -> base_link : THIS node, and only this node
+#   base_link -> ...  : static sensor transforms (robot_bringup or launch argument publish_sensor_tf)
+#
+# Topic names below are relative on purpose (wheel/odom, imu/data, odometry/filtered)
+# and are remapped by the launch files to the names in config/localization.yaml.
+#
+# Requirements on the inputs (otherwise the filter silently ignores or mis-weights them):
+#   * wheel odometry: header.frame_id = odom, child_frame_id = base_link, twist.covariance diagonal > 0
+#     (a covariance of 0 is replaced by a tiny epsilon = "perfect sensor", -1 means "unknown" and the
+#     value is NOT fused). robot_bridge must NOT broadcast odom->base_link itself.
+#   * IMU: header.frame_id = imu_link (static TF to base_link must exist), REP-103 axes,
+#     angular_velocity_covariance diagonal > 0.
+# =============================================================================
+ekf_filter_node:
+  ros__parameters:
+    use_sim_time: false
+
+    frequency: 30.0              # Hz. Output / TF rate. 30 Hz is plenty for a ~0.5 m/s robot and cheap on the Pi 5.
+    sensor_timeout: 0.2          # s. If a sensor stays silent this long the filter predicts without it (watch the log).
+    two_d_mode: true             # Ground robot: z, roll, pitch and their rates are pinned to 0 -> no 3D drift.
+    transform_time_offset: 0.0   # s. Future-date the odom->base_link TF; raise (0.05-0.1) only if TF lookups report "extrapolation into the future".
+    transform_timeout: 0.0
+    print_diagnostics: true      # Publishes /diagnostics; useful to see which input is being rejected.
+    debug: false
+    publish_tf: true             # odom -> base_link. Nothing else may publish this transform.
+    publish_acceleration: false
+    reset_on_time_jump: true
+
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_link
+    world_frame: odom            # SAFETY/ARCHITECTURE: must stay "odom". With world_frame: map this node would
+                                 # publish map->odom and fight AMCL. Global correction is AMCL's job.
+
+    # -------------------------------------------------------------------------
+    # Sensor 0: wheel odometry (raw, from the STM32 via robot_bridge)
+    # -------------------------------------------------------------------------
+    odom0: wheel/odom
+    # The 15 booleans select which fields of the message are fused, in this fixed order:
+    #   [ x,     y,     z,          position
+    #     roll,  pitch, yaw,        orientation
+    #     vx,    vy,    vz,         linear velocity   (body frame)
+    #     vroll, vpitch, vyaw,      angular velocity  (body frame)
+    #     ax,    ay,    az ]        linear acceleration
+    #
+    # We fuse VELOCITIES only (vx, vy, vyaw), never the pose from the same encoders:
+    #   * x/y/yaw of wheel odometry are just the integral of the same velocities. Fusing both would
+    #     count the same information twice and over-trust the encoders (classic r_l mistake).
+    #   * vy = 0 for a differential/skid robot is still useful: it tells the filter the robot cannot
+    #     slide sideways. For a mecanum/omni base it is a real measurement.
+    #   * vyaw from encoders is kept because the IMU gyro has a bias and the encoders anchor it at
+    #     stand-still. TODO: tune on real robot — if wheel slip is severe (carpet, 4WD skid-steer),
+    #     set this vyaw to false and let the gyro own the yaw rate.
+    odom0_config: [false, false, false,
+                   false, false, false,
+                   true,  true,  false,
+                   false, false, false,
+                   false, false, false]
+    odom0_queue_size: 10
+    odom0_differential: false    # Only matters for fused POSE fields; we fuse velocities so leave false.
+    odom0_relative: false
+
+    # -------------------------------------------------------------------------
+    # Sensor 1: IMU
+    # -------------------------------------------------------------------------
+    imu0: imu/data
+    # Fused: vyaw only (the gyro is the best yaw-rate sensor on the robot).
+    # Deliberately NOT fused:
+    #   * yaw orientation: a 6-axis IMU has no absolute heading, its yaw drifts; fusing it would fight the
+    #     encoder/gyro-integrated yaw. With a magnetometer-fused heading (9-axis) you could enable it with
+    #     imu0_relative: true, but indoor magnetic distortion usually makes it worse. TODO: tune on real robot.
+    #   * roll/pitch: pinned to 0 anyway by two_d_mode.
+    #   * ax/ay: accelerometer bias integrates into velocity drift at stand-still. Enable ax only after
+    #     verifying the bias is removed in the driver. TODO: tune on real robot.
+    imu0_config: [false, false, false,
+                  false, false, false,
+                  false, false, false,
+                  false, false, true,
+                  false, false, false]
+    imu0_queue_size: 10
+    imu0_differential: false
+    imu0_relative: false
+    imu0_remove_gravitational_acceleration: true   # Only relevant once ax/ay are fused.
+
+    # process_noise_covariance / initial_estimate_covariance are left at the robot_localization
+    # defaults (reasonable for a slow indoor robot). If /odom lags or overshoots on the real robot,
+    # start by scaling the vx (index 6) and vyaw (index 11) entries. TODO: tune on real robot

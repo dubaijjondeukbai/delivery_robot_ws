@@ -1,0 +1,171 @@
+<?xml version="1.0"?>
+<!--
+  ~/delivery_robot_ws/src/robot_description/urdf/gazebo.xacro
+
+  [Description] Gazebo (gz-sim, Harmonic and newer) extensions. Included by robot.urdf.xacro
+  only when sim:=true, so the real robot's TF-only description stays clean.
+
+      sensors   : gpu_lidar on laser_link -> /scan        (sensor_msgs/LaserScan via ros_gz_bridge)
+                  imu       on imu_link   -> /imu/data    (sensor_msgs/Imu)
+                  camera    on camera_link-> /camera/image_raw + /camera/camera_info
+      plugins   : DiffDrive  (4 wheels, skid-steer)  <- /model/delivery_robot/cmd_vel (gz.msgs.Twist)
+                                                     -> /model/delivery_robot/odometry (bridged to /wheel/odom)
+                  JointStatePublisher                -> /joint_states (wheel angles for robot_state_publisher)
+
+  Sensor/plugin topic and frame names come from robot_params.xacro; the gz<->ROS pairing is in
+  robot_sim/config/bridge.yaml. The world file (robot_sim/worlds/*.sdf) must load the
+  sensors, imu and physics systems for these sensors to produce data.
+
+  Safety / architecture: the drive plugin is the STM32 of the simulation. It is fed through the
+  bridge from the LAST ROS topic before robot_bridge (/cmd_vel_safe by default, see
+  robot_sim/launch/sim.launch.py), so robot_safety stays in the loop exactly as on the real robot.
+  The plugin's own odom->base_link TF is NOT bridged: the EKF (robot_navigation) owns that transform.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- ================ wheel friction (converted by sdformat into <surface><friction>) ================ -->
+  <xacro:macro name="wheel_gazebo" params="name">
+    <gazebo reference="${name}_link">
+      <mu1>${wheel_mu1}</mu1>
+      <mu2>${wheel_mu2}</mu2>
+      <kp>1000000.0</kp>
+      <kd>100.0</kd>
+      <minDepth>0.001</minDepth>
+    </gazebo>
+  </xacro:macro>
+  <xacro:wheel_gazebo name="wheel_front_left"/>
+  <xacro:wheel_gazebo name="wheel_front_right"/>
+  <xacro:wheel_gazebo name="wheel_rear_left"/>
+  <xacro:wheel_gazebo name="wheel_rear_right"/>
+
+  <!-- ================ 2D LiDAR (RPLIDAR A2M12-like) ================ -->
+  <gazebo reference="${laser_frame}">
+    <sensor name="rplidar" type="gpu_lidar">
+      <pose>0 0 0 0 0 0</pose>
+      <topic>${scan_topic}</topic>
+      <gz_frame_id>${laser_frame}</gz_frame_id>      <!-- header.frame_id of the bridged LaserScan -->
+      <update_rate>${lidar_rate_hz}</update_rate>
+      <always_on>true</always_on>
+      <visualize>false</visualize>                   <!-- true draws the rays in the GUI (slow in WSL2) -->
+      <lidar>
+        <scan>
+          <horizontal>
+            <samples>${lidar_samples}</samples>
+            <resolution>1</resolution>
+            <min_angle>${-pi}</min_angle>
+            <max_angle>${pi}</max_angle>
+          </horizontal>
+          <vertical>
+            <samples>1</samples>
+            <resolution>1</resolution>
+            <min_angle>0.0</min_angle>
+            <max_angle>0.0</max_angle>
+          </vertical>
+        </scan>
+        <range>
+          <min>${lidar_range_min}</min>
+          <max>${lidar_range_max}</max>
+          <resolution>0.01</resolution>
+        </range>
+        <noise type="gaussian">
+          <mean>0.0</mean>
+          <stddev>${lidar_noise_std}</stddev>
+        </noise>
+      </lidar>
+    </sensor>
+  </gazebo>
+
+  <!-- ================ IMU ================ -->
+  <gazebo reference="${imu_frame}">
+    <sensor name="imu" type="imu">
+      <topic>${imu_topic}</topic>
+      <gz_frame_id>${imu_frame}</gz_frame_id>
+      <update_rate>${imu_rate_hz}</update_rate>
+      <always_on>true</always_on>
+      <visualize>false</visualize>
+      <imu>
+        <!-- Modest consumer-IMU noise so the EKF has something realistic to fuse. TODO: tune to the real IMU -->
+        <angular_velocity>
+          <x><noise type="gaussian"><mean>0.0</mean><stddev>2e-3</stddev><bias_mean>7.5e-5</bias_mean><bias_stddev>8e-6</bias_stddev></noise></x>
+          <y><noise type="gaussian"><mean>0.0</mean><stddev>2e-3</stddev><bias_mean>7.5e-5</bias_mean><bias_stddev>8e-6</bias_stddev></noise></y>
+          <z><noise type="gaussian"><mean>0.0</mean><stddev>2e-3</stddev><bias_mean>7.5e-5</bias_mean><bias_stddev>8e-6</bias_stddev></noise></z>
+        </angular_velocity>
+        <linear_acceleration>
+          <x><noise type="gaussian"><mean>0.0</mean><stddev>1.7e-2</stddev><bias_mean>0.1</bias_mean><bias_stddev>1e-3</bias_stddev></noise></x>
+          <y><noise type="gaussian"><mean>0.0</mean><stddev>1.7e-2</stddev><bias_mean>0.1</bias_mean><bias_stddev>1e-3</bias_stddev></noise></y>
+          <z><noise type="gaussian"><mean>0.0</mean><stddev>1.7e-2</stddev><bias_mean>0.1</bias_mean><bias_stddev>1e-3</bias_stddev></noise></z>
+        </linear_acceleration>
+      </imu>
+    </sensor>
+  </gazebo>
+
+  <!-- ================ Front camera ================
+       The sensor is attached to camera_link (looks along +x) but the images are stamped with the
+       optical frame, whose +z is camera_link's +x: pixel geometry and TF agree (same scheme as nav2's TB4 sim). -->
+  <gazebo reference="${camera_frame}">
+    <sensor name="front_camera" type="camera">
+      <pose>0 0 0 0 0 0</pose>
+      <topic>${image_topic}</topic>
+      <gz_frame_id>${camera_optical_frame}</gz_frame_id>
+      <update_rate>${camera_rate_hz}</update_rate>
+      <always_on>true</always_on>
+      <visualize>false</visualize>
+      <camera>
+        <camera_info_topic>${camera_info_topic}</camera_info_topic>
+        <horizontal_fov>${camera_hfov}</horizontal_fov>
+        <image>
+          <width>${camera_width}</width>
+          <height>${camera_height}</height>
+          <format>R8G8B8</format>                   <!-- rgb8 on ROS; cv_bridge converts to bgr8 in robot_vision -->
+        </image>
+        <clip>
+          <near>0.05</near>
+          <far>20.0</far>
+        </clip>
+        <noise type="gaussian">
+          <mean>0.0</mean>
+          <stddev>0.005</stddev>
+        </noise>
+      </camera>
+    </sensor>
+  </gazebo>
+
+  <!-- ================ Drive + joint states ================ -->
+  <gazebo>
+    <!-- Skid-steer base = DiffDrive with two joints per side -->
+    <plugin filename="gz-sim-diff-drive-system" name="gz::sim::systems::DiffDrive">
+      <left_joint>wheel_front_left_joint</left_joint>
+      <left_joint>wheel_rear_left_joint</left_joint>
+      <right_joint>wheel_front_right_joint</right_joint>
+      <right_joint>wheel_rear_right_joint</right_joint>
+      <wheel_separation>${2.0 * wheel_y}</wheel_separation>
+      <wheel_radius>${wheel_radius}</wheel_radius>
+      <!-- motor limits from robot_params.xacro (NURI WA172E, TODO datasheet) -->
+      <max_linear_velocity>${max_linear_velocity}</max_linear_velocity>
+      <min_linear_velocity>${-max_linear_velocity}</min_linear_velocity>
+      <max_angular_velocity>${max_angular_velocity}</max_angular_velocity>
+      <min_angular_velocity>${-max_angular_velocity}</min_angular_velocity>
+      <max_linear_acceleration>${max_linear_acceleration}</max_linear_acceleration>
+      <min_linear_acceleration>${-max_linear_acceleration}</min_linear_acceleration>
+      <max_angular_acceleration>${max_angular_acceleration}</max_angular_acceleration>
+      <min_angular_acceleration>${-max_angular_acceleration}</min_angular_acceleration>
+      <topic>${gz_cmd_vel_topic}</topic>
+      <odom_topic>${gz_odom_topic}</odom_topic>
+      <odom_covariance_topic>${gz_odom_cov_topic}</odom_covariance_topic>   <!-- advertised but not published by some gz versions; the bridge uses odom_topic -->
+      <tf_topic>${gz_tf_topic}</tf_topic>            <!-- intentionally NOT bridged: EKF publishes odom->base_link -->
+      <frame_id>odom</frame_id>
+      <child_frame_id>${base_frame}</child_frame_id>
+      <odom_publish_frequency>50</odom_publish_frequency>
+    </plugin>
+
+    <!-- Wheel joint angles -> /joint_states so robot_state_publisher can publish the wheel TFs -->
+    <plugin filename="gz-sim-joint-state-publisher-system" name="gz::sim::systems::JointStatePublisher">
+      <topic>${joint_states_topic}</topic>
+      <joint_name>wheel_front_left_joint</joint_name>
+      <joint_name>wheel_front_right_joint</joint_name>
+      <joint_name>wheel_rear_left_joint</joint_name>
+      <joint_name>wheel_rear_right_joint</joint_name>
+    </plugin>
+  </gazebo>
+
+</robot>

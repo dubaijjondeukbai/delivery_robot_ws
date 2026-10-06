@@ -1,35 +1,126 @@
 # ~/delivery_robot_ws/src/robot_vision/config/vision.yaml
 #
 # Parameters for robot_vision nodes (package defaults).
-# NOTE: numeric values are initial test values -> TODO: tune on the real robot.
-# NOTE: keep float parameters written with a decimal point (5.0, not 5),
-#       otherwise ROS2 reports a parameter type mismatch at startup.
+# NOTE: numeric values are initial values for the Raspberry Pi 5 prototype -> TODO: tune on the real robot.
+# NOTE: keep float parameters written with a decimal point (15.0, not 15) and integer
+#       parameters without one, otherwise ROS2 refuses to start the node with a
+#       "wrong parameter type" error.
 # NOTE: robot_bringup/config/robot.yaml is loaded AFTER this file and may
-#       override values here (e.g. use_camera).
+#       override values here (e.g. use_camera, detector_node.enabled).
+# NOTE: node names below must match the names used in the Python code (camera_node,
+#       apriltag_node, qr_node, detector_node). Run a single node with
+#       ros2 run robot_vision <node> --ros-args --params-file <path>/vision.yaml
 
 camera_node:
   ros__parameters:
-    use_camera: false              # false = mock mode (no hardware access)
-    camera_id: 0                   # TODO: /dev/videoN index of the real camera
-    frame_id: camera_link
-    publish_rate_hz: 5.0           # TODO: real camera rate (e.g. 15.0 ~ 30.0)
-    image_width: 320               # TODO: real camera resolution
-    image_height: 240              # TODO: real camera resolution
-    heartbeat_period_sec: 5.0
+    # false = mock camera (black frames, no hardware access). true = real camera (backend below).
+    use_camera: false
+    # Front camera: Raspberry Pi Camera Module 3 Wide (Sony IMX708, CSI, 102 deg HFOV, autofocus).
+    # A CSI camera is served by libcamera, not by /dev/videoN, hence the backend choice:
+    #   auto      -> picamera2, then gstreamer (libcamerasrc), then v4l2 (first one that delivers a frame)
+    #   picamera2 -> libcamera via the picamera2 Python library (recommended on the Pi)
+    #   gstreamer -> cv2.VideoCapture("libcamerasrc ! ...") (needs gstreamer1.0-libcamera)
+    #   v4l2      -> USB UVC webcam via cv2.VideoCapture(camera_id)
+    camera_backend: auto
+    # picamera2 camera number / v4l2 device index (/dev/video<N> -> N; USB cameras: v4l2-ctl --list-devices)
+    camera_id: 0
+    # 640x480 (4:3) crops the 16:9 sensor horizontally: ~86 deg HFOV. Use 640x360 to keep the full 102 deg.
+    image_width: 640
+    image_height: 480
+    publish_rate_hz: 15.0                 # TODO: tune on the real robot (CPU budget of the Pi 5)
+    frame_id: camera_optical_frame        # OpenCV optical frame: x right, y down, z forward (skeleton used camera_link)
+    # v4l2 only: pixel format request, e.g. "MJPG" if a USB camera cannot deliver the fps in YUYV. "" = driver default.
+    fourcc: ""                            # TODO: tune on the real robot
+    # gstreamer only: "" = libcamerasrc pipeline built from width/height/rate; override to add camera-name=... etc.
+    gstreamer_pipeline: ""
+    # picamera2 only: "RGB888" arrays are B,G,R ordered (= bgr8). Switch to "BGR888" if colours look swapped.
+    picamera2_format: RGB888
+    picamera2_autofocus: true             # Camera Module 3: continuous PDAF autofocus
     image_topic: /camera/image_raw
+    camera_info_topic: /camera/camera_info
+    # Intrinsics for the resolution above. 0.0 = NOT calibrated: CameraInfo is published with
+    # zeroed K/D/R/P (K[0]==0) and apriltag_node publishes tag_id only (no tag_pose).
+    # Nominal Camera Module 3 Wide values at 640x480 (4:3 crop of the 102 deg lens): fx ~ fy ~ 345,
+    # cx ~ 320, cy ~ 240, strong barrel distortion (k1 < 0) -> calibrate before trusting any pose.
+    # TODO: tune on the real robot (calibrate the camera and paste fx fy cx cy here)
+    intrinsics:
+      fx: 0.0
+      fy: 0.0
+      cx: 0.0
+      cy: 0.0
+    # plumb_bob distortion coefficients (k1 k2 p1 p2 k3). TODO: tune on the real robot
+    distortion:
+      k1: 0.0
+      k2: 0.0
+      p1: 0.0
+      p2: 0.0
+      k3: 0.0
+    # Recovery: after this many consecutive read failures (~1 s at 15 Hz) the device is reopened.
+    reopen_after_failures: 15
+    reopen_interval_sec: 2.0
+    heartbeat_period_sec: 5.0
 
 apriltag_node:
   ros__parameters:
-    enabled: true
-    tag_size: 0.15                 # [m] TODO: measure the printed tag
-    heartbeat_period_sec: 5.0
+    enabled: true                         # false = node runs (heartbeat only) without subscribing to images
     image_topic: /camera/image_raw
+    camera_info_topic: /camera/camera_info
     tag_id_topic: /vision/tag_id
     tag_pose_topic: /vision/tag_pose
+    tag_family: tag36h11                  # cv2.aruco.DICT_APRILTAG_36h11
+    # Outer edge length of the black square of the printed tag, in metres (measure it!).
+    tag_size: 0.15                        # TODO: tune on the real robot (measure the printed tag)
+    # -1 = track the largest tag in view (the docking marker being approached); >= 0 = that id only.
+    target_tag_id: -1
+    # Poses farther than this along the optical axis are treated as solver failures.
+    max_tag_distance_m: 10.0              # TODO: tune on the real robot
+    # Overlay with corners/ids/axes on /vision/apriltag_debug_image. Costs CPU; keep off on the Pi.
+    publish_debug_image: false
+    debug_image_topic: /vision/apriltag_debug_image
+    # How often the "camera not calibrated, no tag_pose" warning may repeat while tags are seen.
+    calibration_warning_period_sec: 10.0
+    heartbeat_period_sec: 5.0
 
 qr_node:
   ros__parameters:
-    enabled: true
-    heartbeat_period_sec: 5.0
+    enabled: true                         # false = node runs (heartbeat only) without subscribing to images
     image_topic: /camera/image_raw
     qr_result_topic: /vision/qr_result
+    # The same text is republished at most once per this interval while it stays in view.
+    repeat_suppression_sec: 1.0           # TODO: tune on the real robot
+    # Decode every Nth frame only (1 = every frame). 2-3 is usually enough for station markers.
+    process_every_n_frames: 1             # TODO: tune on the real robot
+    use_multi_decode: true                # detectAndDecodeMulti, falls back to detectAndDecode
+    # cv2.QRCodeDetectorAruco is faster on small CPUs when available (OpenCV >= 4.8).
+    use_aruco_detector: false             # TODO: tune on the real robot
+    heartbeat_period_sec: 5.0
+
+detector_node:
+  ros__parameters:
+    # false = node runs (heartbeat only) without loading a model. Handy while torch/ultralytics
+    # are not installed on the target yet.
+    enabled: true
+    # Ultralytics model. A bare name is downloaded into the current working directory on first use;
+    # use an absolute path on the robot, e.g. /home/<user>/models/yolo11n.pt or an exported
+    # NCNN directory such as /home/<user>/models/yolo11n_ncnn_model
+    model_path: yolo11n.pt                # TODO: tune on the real robot (absolute path / NCNN export)
+    device: cpu
+    imgsz: 416                            # TODO: tune on the real robot (320 for more fps, 640 for accuracy)
+    confidence_threshold: 0.40            # TODO: tune on the real robot
+    iou_threshold: 0.50
+    max_detections: 20
+    # COCO class ids: 0 person, 1 bicycle, 2 car, 3 motorcycle, 5 bus, 7 truck. Use [-1] for all classes.
+    classes: [0, 1, 2, 3, 5, 7]
+    # Publish /vision/debug_image with boxes drawn. Off by default to save Pi CPU.
+    publish_annotated_image: false
+    annotated_image_topic: /vision/debug_image
+    heartbeat_period_sec: 5.0
+    # Inference scheduling: the newest camera frame is processed at this rate; older frames are dropped.
+    inference_rate_hz: 5.0                # TODO: tune on the real robot (measured last_inference_ms in heartbeat)
+    # Torch CPU threads for inference. 0 = library default. 2-3 leaves cores for the rest of the robot.
+    cpu_threads: 0                        # TODO: tune on the real robot
+    warmup: true
+    # false -> Detection2D class_id is the COCO index as a string ("0"); true -> the name ("person").
+    use_class_names: false
+    image_topic: /camera/image_raw
+    detections_topic: /vision/detections

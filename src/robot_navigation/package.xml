@@ -1,0 +1,55 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>robot_navigation</name>
+  <version>0.1.0</version>
+  <description>Navigation package: robot_localization EKF (wheel odometry + IMU), slam_toolbox mapping, Nav2 map_server + AMCL localization and the Nav2 navigation servers. Launch + config only (no custom nodes); Nav2 output is routed to /cmd_vel_auto so robot_safety keeps authority over the motors.</description>
+  <maintainer email="developer@todo.todo">developer</maintainer>
+  <license>Apache-2.0</license>
+
+  <!-- launch infrastructure used by launch/*.launch.py and robot_navigation/launch_common.py -->
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>ros2launch</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+
+  <!-- TF: static_transform_publisher for base_link -> laser_link / imu_link -->
+  <exec_depend>tf2_ros</exec_depend>
+
+  <!-- odometry fusion -->
+  <exec_depend>robot_localization</exec_depend>
+
+  <!-- mapping -->
+  <exec_depend>slam_toolbox</exec_depend>
+
+  <!-- localization -->
+  <exec_depend>nav2_map_server</exec_depend>
+  <exec_depend>nav2_amcl</exec_depend>
+  <exec_depend>nav2_lifecycle_manager</exec_depend>
+
+  <!-- navigation servers and the plugins referenced in config/nav2.yaml -->
+  <exec_depend>nav2_controller</exec_depend>
+  <exec_depend>nav2_planner</exec_depend>
+  <exec_depend>nav2_behaviors</exec_depend>
+  <exec_depend>nav2_bt_navigator</exec_depend>
+  <exec_depend>nav2_velocity_smoother</exec_depend>
+  <exec_depend>nav2_costmap_2d</exec_depend>
+  <exec_depend>nav2_navfn_planner</exec_depend>
+  <exec_depend>nav2_regulated_pure_pursuit_controller</exec_depend>
+
+  <!--
+    rclpy / sensor_msgs / nav_msgs / geometry_msgs are intentionally NOT listed: this package
+    has no Python node and never imports them. The message packages arrive transitively through
+    the Nav2 / robot_localization dependencies above.
+  -->
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

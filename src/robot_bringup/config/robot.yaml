@@ -4,6 +4,12 @@
 # robot.launch.py loads this file LAST, so values here OVERRIDE
 # robot_vision/config/vision.yaml and robot_follower/config/follower.yaml.
 # Keep only system-wide switches here; package details stay in the package yaml.
+#
+# NOTE: robot_navigation nodes (EKF, slam_toolbox, AMCL, Nav2) are NOT loaded with this
+#       file. They use robot_navigation/config/*.yaml plus the launch arguments of
+#       robot.launch.py (nav_mode, map, motion_enabled, scan_topic, ...).
+# NOTE: use_sim_time below is overridden by the launch argument of the same name
+#       (robot.launch.py sim:=true sets it to true for every node).
 
 # Applies to every node
 /**:
@@ -12,7 +18,15 @@
 
 camera_node:
   ros__parameters:
-    use_camera: false          # Master switch: real camera on/off (false = mock mode)
+    use_camera: false          # Master switch: real camera on/off (false = mock mode). Not started at all with sim:=true
+
+apriltag_node:
+  ros__parameters:
+    enabled: false             # Master switch: AprilTag off (2026-10-05 decision: no AprilTag docking). true = detect again
+
+detector_node:
+  ros__parameters:
+    enabled: true              # Master switch: YOLO on/off (CPU heavy on the Pi 5; false = heartbeat only)
 
 waypoint_follower_node:
   ros__parameters:

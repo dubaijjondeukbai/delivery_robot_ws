@@ -1,16 +1,28 @@
-# ROS2
+# colcon / ROS 2 build artefacts
 build/
 install/
 log/
 
 # Python
 __pycache__/
-*.pyc
-*.pyo
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
 
-# VS Code
+# YOLO weights / exports (download or export them on the target; too large for git)
+*.pt
+*.onnx
+*.torchscript
+*_ncnn_model/
+*_openvino_model/
+
+# slam_toolbox serialized pose graphs (map.yaml / map.pgm are small and meant to be committed)
+src/robot_navigation/maps/*.data
+src/robot_navigation/maps/*.posegraph
+
+# editors / OS
 .vscode/
-
-# OS
+.idea/
+*.swp
 .DS_Store
-Thumbs.db

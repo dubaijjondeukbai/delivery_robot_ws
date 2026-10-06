@@ -3,7 +3,7 @@
 <package format="3">
   <name>robot_bringup</name>
   <version>0.1.0</version>
-  <description>Master package: launches the whole delivery robot system and loads parameters. No algorithms.</description>
+  <description>Master package: launches the whole delivery robot system (model/TF, vision, follower, optional navigation and Gazebo simulation) and loads parameters. No algorithms.</description>
   <maintainer email="developer@todo.todo">developer</maintainer>
   <license>Apache-2.0</license>
 
@@ -16,6 +16,10 @@
   <!-- Packages launched by robot.launch.py -->
   <exec_depend>robot_vision</exec_depend>
   <exec_depend>robot_follower</exec_depend>
+  <exec_depend>robot_navigation</exec_depend>   <!-- included when nav_mode != none -->
+  <exec_depend>robot_safety</exec_depend>       <!-- present in the workspace, launched by hand for now -->
+  <exec_depend>robot_description</exec_depend>  <!-- URDF / TF, always -->
+  <exec_depend>robot_sim</exec_depend>          <!-- included when sim:=true -->
 
   <!-- TODO Future packages
   <exec_depend>robot_safety</exec_depend>

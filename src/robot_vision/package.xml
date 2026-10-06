@@ -3,7 +3,7 @@
 <package format="3">
   <name>robot_vision</name>
   <version>0.1.0</version>
-  <description>Vision package: camera input, AprilTag detection, QR detection (skeleton).</description>
+  <description>Vision package: camera input (USB UVC / mock), AprilTag detection + pose, QR detection, YOLO object detection. Publishes perception topics only; never controls STM32/ESP32.</description>
   <maintainer email="developer@todo.todo">developer</maintainer>
   <license>Apache-2.0</license>
 
@@ -11,11 +11,18 @@
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>vision_msgs</exec_depend>
 
-  <!-- TODO: add when implementing the real camera driver / detection
+  <!-- Real camera driver / detection (rosdep keys -> apt ros-<distro>-cv-bridge, python3-opencv, python3-numpy) -->
   <exec_depend>cv_bridge</exec_depend>
   <exec_depend>python3-opencv</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
+
+  <!--
+    ultralytics (and the torch it pulls in) has NO rosdep key, so it is deliberately not listed
+    here; inventing a key would make `rosdep install` fail for the whole workspace. It is a
+    pip dependency installed on the target as described in README.md, and detector_node
+    reports a clear ERROR (and stays alive) when it is missing.
   -->
 
   <test_depend>ament_copyright</test_depend>
