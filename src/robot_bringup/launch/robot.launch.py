@@ -213,6 +213,9 @@ def generate_launch_description():
     navigation_common_args = {
         'use_sim_time': use_sim_time,
         'publish_sensor_tf': 'false',
+        'set_initial_pose': sim,   # sim: robot spawns at the map origin -> AMCL self-initialises, Nav2 comes up without RViz clicks
+        # sim: WSL2 stalls of several seconds are normal -> disable bond monitoring; real robot: lenient 10 s
+        'bond_timeout': PythonExpression(["'0.0' if '", sim, "'.strip().lower() in ('true', '1') else '10.0'"]),
     }
     mapping_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(navigation_launch_dir, 'mapping.launch.py')),
