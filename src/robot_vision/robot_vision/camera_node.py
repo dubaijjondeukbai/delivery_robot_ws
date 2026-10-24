@@ -1,665 +1,885 @@
 #!/usr/bin/env python3
 """
-[Vision] camera_node
+Camera Module 3 / USB / mock 영상과 CameraInfo를 발행한다.
 
-Role
+인스턴스 하나당 카메라 한 대를 담당한다.
+두 대는 노드를 두 번 실행하고 다음을 각각 다르게 지정한다.
+
+- 노드 이름
+- camera_id 또는 camera_unique_id
+- image_topic
+- camera_info_topic
+- frame_id
+- 카메라 보정값
+
+카메라 위치와 방향(TF)은 URDF에서 정의한다.
+
+출력
 ----
-Manage the camera input and publish images + camera intrinsics.
+Image:
+    bgr8 영상.
 
-    camera (Raspberry Pi Camera Module 3 Wide | USB UVC | mock)
-            |
-            v
-       camera_node  --->  /camera/image_raw   (sensor_msgs/Image, bgr8)
-                    --->  /camera/camera_info (sensor_msgs/CameraInfo, same stamp)
+CameraInfo:
+    영상과 동일한 stamp, frame_id, 실제 해상도.
+    보정 조건을 만족하지 않으면 K/D/R/P를 0으로 발행.
 
-Hardware
---------
-Front camera: Raspberry Pi Camera Module 3 Wide (Sony IMX708, CSI, 102 deg horizontal
-FOV, autofocus). A CSI camera is NOT a UVC device: on the Pi it is served by libcamera,
-so plain cv2.VideoCapture(/dev/videoN) does not deliver frames. This node therefore has
-several frame sources (parameter camera_backend):
+시간
+----
+stamp는 호스트에서 프레임을 받은 직후의 ROS 시각이다.
+센서의 실제 노출 시각이나 두 카메라의 동기화를 의미하지 않는다.
 
-    picamera2  : libcamera through the picamera2 Python library (best on the Pi)
-    gstreamer  : cv2.VideoCapture("libcamerasrc ! ... ! appsink", CAP_GSTREAMER)
-                 (needs gstreamer1.0-libcamera and an OpenCV built with GStreamer, as Ubuntu's is)
-    v4l2       : cv2.VideoCapture(camera_id) - USB UVC webcams (the previous default)
-    auto       : try picamera2 -> gstreamer -> v4l2 and keep the first that delivers a frame
-
-Modes
------
-use_camera = false  (default)
-    MOCK MODE. No hardware access. A black bgr8 frame of the configured size is
-    published at publish_rate_hz so that apriltag_node / qr_node / detector_node
-    can be tested without a real camera.
-
-use_camera = true
-    REAL MODE. One of the frame sources above. A failed open or a dropped frame
-    never kills the node: it keeps counting failures and reopens the source
-    periodically.
-
-CameraInfo
-----------
-Follows the sensor_msgs convention: for a camera that has not been calibrated yet
-(intrinsics.fx/fy == 0) the K/D/R/P matrices are published ZEROED (K[0] == 0 marks
-"uncalibrated") and the node says so in the log. apriltag_node then publishes
-tag_id only (no tag_pose) until real intrinsics are entered in vision.yaml.
-
-Safety / architecture
----------------------
-This node is a pure camera driver. It performs no detection of any kind, so the
-perception nodes depend only on the Image/CameraInfo topics. In simulation the
-node is not started at all: the Gazebo camera publishes the same topics.
+설정
+----
+파라미터는 시작 시 읽는다.
+설정을 변경한 뒤에는 노드를 재시작한다.
 """
-
-from __future__ import annotations
 
 import math
 import sys
 import time
-from typing import List, Optional
 
 import cv2
 import numpy as np
 import rclpy
-from cv_bridge import CvBridge, CvBridgeError
+from cv_bridge import CvBridge
 from rclpy.executors import ExternalShutdownException
-from rclpy.logging import get_logger
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, Image
 
 from robot_vision import common
 
-# ==================================================
-# TOPIC NAMES
-# Defaults live in robot_vision/common.py (single source for every vision node)
-# and can be overridden in vision.yaml (image_topic / camera_info_topic).
-# Do NOT hard-code topic strings anywhere else in this file.
-# ==================================================
-DEFAULT_IMAGE_TOPIC = common.TOPIC_IMAGE_RAW
-DEFAULT_CAMERA_INFO_TOPIC = common.TOPIC_CAMERA_INFO
-DEFAULT_FRAME_ID = common.DEFAULT_CAMERA_FRAME_ID
 
-MODE_MOCK = 'mock'
-MODE_REAL = 'real'
-DISTORTION_MODEL_PLUMB_BOB = 'plumb_bob'
-IMAGE_ENCODING = 'bgr8'
-
-BACKEND_AUTO = 'auto'
-BACKEND_PICAMERA2 = 'picamera2'
-BACKEND_GSTREAMER = 'gstreamer'
-BACKEND_V4L2 = 'v4l2'
-BACKEND_ORDER_AUTO = (BACKEND_PICAMERA2, BACKEND_GSTREAMER, BACKEND_V4L2)
-BACKENDS = (BACKEND_AUTO,) + BACKEND_ORDER_AUTO
-
-
-# ==================================================
-# FRAME SOURCES
-# One small class per way of getting a BGR frame. The node only talks to the
-# FrameSource interface, so adding a camera later means adding a class here.
-# ==================================================
-class FrameSource:
-    """Minimal interface: open() -> bool, read() -> BGR uint8 array | None, release()."""
-
-    name = 'abstract'
-
-    def open(self) -> bool:
-        raise NotImplementedError
-
-    def read(self) -> Optional[np.ndarray]:
-        raise NotImplementedError
-
-    def release(self) -> None:
-        raise NotImplementedError
-
-    def describe(self) -> str:
-        return self.name
-
-
-class OpenCvSource(FrameSource):
-    """cv2.VideoCapture on a V4L2 device index (USB UVC webcams)."""
-
-    name = BACKEND_V4L2
-
-    def __init__(self, camera_id: int, width: int, height: int, fps: float, fourcc: str, logger) -> None:
-        self._camera_id = camera_id
-        self._width = width
-        self._height = height
-        self._fps = fps
-        self._fourcc = fourcc
-        self._log = logger
-        self._cap = None  # type: Optional[cv2.VideoCapture]
-        self._actual = ''
-
-    def open(self) -> bool:
-        self.release()
-        backends = []
-        if sys.platform.startswith('linux') and hasattr(cv2, 'CAP_V4L2'):
-            backends.append(('V4L2', cv2.CAP_V4L2))
-        backends.append(('default', cv2.CAP_ANY))
-        cap = None
-        for label, backend in backends:
-            try:
-                candidate = cv2.VideoCapture(self._camera_id, backend)
-            except cv2.error as exc:
-                self._log.warning(f'[Vision] VideoCapture with {label} backend raised: {exc}')
-                continue
-            if candidate is not None and candidate.isOpened():
-                cap = candidate
-                break
-            if candidate is not None:
-                candidate.release()
-        if cap is None:
-            return False
-        # Requests only; not every camera honours them, so the actual values are read back.
-        if self._fourcc:
-            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*self._fourcc))
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(self._width))
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(self._height))
-        cap.set(cv2.CAP_PROP_FPS, float(self._fps))
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1.0)   # keep the driver queue short (ignored if unsupported)
-        self._actual = (f'{int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))}'
-                        f' @ {cap.get(cv2.CAP_PROP_FPS):.1f} fps')
-        self._cap = cap
-        return True
-
-    def read(self) -> Optional[np.ndarray]:
-        if self._cap is None or not self._cap.isOpened():
-            return None
-        ok, frame = self._cap.read()
-        if not ok or frame is None or frame.size == 0:
-            return None
-        return frame
-
-    def release(self) -> None:
-        if self._cap is not None:
-            try:
-                self._cap.release()
-            except cv2.error as exc:
-                self._log.warning(f'[Vision] Error while releasing camera: {exc}')
-            self._cap = None
-
-    def describe(self) -> str:
-        return f'v4l2 camera_id={self._camera_id} ({self._actual})'
-
-
-class GStreamerSource(FrameSource):
-    """cv2.VideoCapture on a GStreamer pipeline (libcamerasrc for the CSI camera).
-
-    Requires an OpenCV built with GStreamer (Ubuntu's python3-opencv is) and the
-    gstreamer1.0-libcamera plugin on the Pi. The default pipeline lets libcamerasrc pick
-    its native format and converts to BGR, which is what the rest of the node expects.
+# ============================================================
+# 영상 형식 검증
+# ============================================================
+def bgr_frame(frame):
     """
+    비어 있지 않은 H x W x 3, uint8 BGR 영상만 허용한다.
 
-    name = BACKEND_GSTREAMER
-
-    def __init__(self, pipeline: str, width: int, height: int, fps: float, logger) -> None:
-        self._pipeline = pipeline.strip() or self.default_pipeline(width, height, fps)
-        self._log = logger
-        self._cap = None  # type: Optional[cv2.VideoCapture]
-
-    @staticmethod
-    def default_pipeline(width: int, height: int, fps: float) -> str:
-        return (f'libcamerasrc ! video/x-raw,width={width},height={height},framerate={int(round(fps))}/1 '
-                f'! videoconvert ! video/x-raw,format=BGR ! appsink drop=true max-buffers=1 sync=false')
-
-    @staticmethod
-    def opencv_has_gstreamer() -> bool:
-        """True when cv2.getBuildInformation() reports 'GStreamer: YES (...)'."""
-        try:
-            for line in cv2.getBuildInformation().splitlines():
-                if line.strip().startswith('GStreamer:'):
-                    return 'YES' in line
-        except cv2.error:
-            pass
-        return False
-
-    def open(self) -> bool:
-        self.release()
-        if not hasattr(cv2, 'CAP_GSTREAMER') or not self.opencv_has_gstreamer():
-            self._log.warning('[Vision] OpenCV was built without GStreamer; gstreamer backend unavailable')
-            return False
-        try:
-            cap = cv2.VideoCapture(self._pipeline, cv2.CAP_GSTREAMER)
-        except cv2.error as exc:
-            self._log.warning(f'[Vision] GStreamer pipeline raised: {exc}')
-            return False
-        if cap is None or not cap.isOpened():
-            if cap is not None:
-                cap.release()
-            return False
-        self._cap = cap
-        return True
-
-    def read(self) -> Optional[np.ndarray]:
-        if self._cap is None or not self._cap.isOpened():
-            return None
-        ok, frame = self._cap.read()
-        if not ok or frame is None or frame.size == 0:
-            return None
-        return frame
-
-    def release(self) -> None:
-        if self._cap is not None:
-            try:
-                self._cap.release()
-            except cv2.error as exc:
-                self._log.warning(f'[Vision] Error while releasing GStreamer pipeline: {exc}')
-            self._cap = None
-
-    def describe(self) -> str:
-        return f'gstreamer "{self._pipeline}"'
-
-
-class Picamera2Source(FrameSource):
-    """libcamera through picamera2 (Raspberry Pi Camera Module 3 and other CSI cameras).
-
-    picamera2's "RGB888" delivers numpy arrays in B,G,R byte order, i.e. exactly the bgr8
-    layout OpenCV and this node use. If the colours come out swapped on your install,
-    set picamera2_format to "BGR888".
+    임의로 resize하거나 잘못된 채널 수를 잘라내지 않는다.
     """
+    if (
+        not isinstance(frame, np.ndarray)
+        or frame.dtype != np.uint8
+        or frame.ndim != 3
+        or frame.shape[2] != 3
+        or frame.shape[0] < 1
+        or frame.shape[1] < 1
+    ):
+        raise ValueError(
+            'Expected a non-empty HxWx3 uint8 BGR frame'
+        )
 
-    name = BACKEND_PICAMERA2
+    return np.ascontiguousarray(frame)
 
-    def __init__(self, camera_num: int, width: int, height: int, fps: float, pixel_format: str,
-                 autofocus: bool, logger) -> None:
-        self._camera_num = camera_num
-        self._width = width
-        self._height = height
-        self._fps = fps
-        self._format = pixel_format or 'RGB888'
-        self._autofocus = autofocus
-        self._log = logger
+
+# ============================================================
+# 카메라 입력
+# ============================================================
+class CameraSource:
+    """카메라 핸들을 열고, 읽고, 해제한다."""
+
+    def __init__(self, backend, config, logger):
+        self.backend = backend
+        self.config = config
+        self.log = logger
+
         self._cam = None
-        self._info = ''
+        self._cap = None
 
-    def open(self) -> bool:
-        self.release()
+    def open(self):
+        c = self.config
+
         try:
-            from picamera2 import Picamera2  # optional dependency, only present on the Pi
-        except ImportError:
-            self._log.info('[Vision] picamera2 not installed; skipping that backend')
-            return False
-        try:
-            cam = Picamera2(self._camera_num)
-            config = cam.create_video_configuration(
-                main={'size': (self._width, self._height), 'format': self._format},
-                controls={'FrameRate': float(self._fps)},
+            # ------------------------------------------------
+            # Raspberry Pi CSI 카메라
+            # ------------------------------------------------
+            if self.backend == 'picamera2':
+                from picamera2 import Picamera2
+
+                camera_num = c['camera_id']
+                unique_id = c['camera_unique_id']
+
+                # 고유 ID가 지정됐다면 번호보다 우선한다.
+                if unique_id:
+                    matches = [
+                        item
+                        for item in Picamera2.global_camera_info()
+                        if item.get('Id') == unique_id
+                    ]
+
+                    if len(matches) != 1:
+                        raise RuntimeError(
+                            'camera_unique_id not uniquely found'
+                        )
+
+                    camera_num = int(matches[0]['Num'])
+
+                # configure/start 도중 실패해도 해제할 수 있도록
+                # 객체를 생성하자마자 저장한다.
+                self._cam = Picamera2(camera_num)
+
+                video = self._cam.create_video_configuration(
+                    main={
+                        'size': (
+                            c['image_width'],
+                            c['image_height'],
+                        ),
+                        'format': c['picamera2_format'],
+                    },
+                    controls={
+                        'FrameRate': c['publish_rate_hz'],
+                    },
+                    buffer_count=4,
+                    queue=False,
+                )
+
+                self._cam.configure(video)
+
+                if 'AfMode' in self._cam.camera_controls:
+                    from libcamera import controls
+
+                    if c['picamera2_autofocus']:
+                        focus = {
+                            'AfMode':
+                                controls.AfModeEnum.Continuous,
+                        }
+                    else:
+                        focus = {
+                            'AfMode':
+                                controls.AfModeEnum.Manual,
+                            'LensPosition':
+                                c['picamera2_lens_position'],
+                        }
+
+                    self._cam.set_controls(focus)
+
+                self._cam.start()
+
+                self.log.info(
+                    f'[Camera] Picamera2 camera_num={camera_num}'
+                )
+
+            # ------------------------------------------------
+            # 명시적으로 지정한 GStreamer pipeline
+            # ------------------------------------------------
+            elif self.backend == 'gstreamer':
+                pipeline = c['gstreamer_pipeline']
+
+                # 두 카메라가 같은 장치를 자동 선택하지 않도록
+                # 사용할 카메라를 지정한 pipeline을 요구한다.
+                if not pipeline:
+                    raise RuntimeError(
+                        'gstreamer_pipeline must select '
+                        'the camera explicitly'
+                    )
+
+                available = any(
+                    line.strip().startswith('GStreamer:')
+                    and 'YES' in line
+                    for line in (
+                        cv2.getBuildInformation().splitlines()
+                    )
+                )
+
+                if not available:
+                    raise RuntimeError(
+                        'OpenCV has no GStreamer support'
+                    )
+
+                self._cap = cv2.VideoCapture(
+                    pipeline,
+                    cv2.CAP_GSTREAMER,
+                )
+
+                if not self._cap.isOpened():
+                    raise RuntimeError(
+                        'Cannot open GStreamer pipeline'
+                    )
+
+            # ------------------------------------------------
+            # USB UVC 카메라
+            # ------------------------------------------------
+            elif self.backend == 'v4l2':
+                api = (
+                    cv2.CAP_V4L2
+                    if sys.platform.startswith('linux')
+                    else cv2.CAP_ANY
+                )
+
+                self._cap = cv2.VideoCapture(
+                    c['camera_id'],
+                    api,
+                )
+
+                if not self._cap.isOpened():
+                    raise RuntimeError(
+                        'Cannot open USB camera'
+                    )
+
+                if c['fourcc']:
+                    self._cap.set(
+                        cv2.CAP_PROP_FOURCC,
+                        cv2.VideoWriter_fourcc(*c['fourcc']),
+                    )
+
+                self._cap.set(
+                    cv2.CAP_PROP_FRAME_WIDTH,
+                    c['image_width'],
+                )
+                self._cap.set(
+                    cv2.CAP_PROP_FRAME_HEIGHT,
+                    c['image_height'],
+                )
+                self._cap.set(
+                    cv2.CAP_PROP_FPS,
+                    c['publish_rate_hz'],
+                )
+                self._cap.set(
+                    cv2.CAP_PROP_BUFFERSIZE,
+                    1,
+                )
+
+            else:
+                raise ValueError(
+                    f'Unknown backend: {self.backend}'
+                )
+
+            return True
+
+        except Exception as exc:
+            self.close()
+
+            self.log.warning(
+                f'[Camera] {self.backend} open failed: {exc!r}'
             )
-            cam.configure(config)
-            if self._autofocus:
-                try:
-                    from libcamera import controls as lc_controls
-                    cam.set_controls({'AfMode': lc_controls.AfModeEnum.Continuous})
-                except Exception as exc:  # noqa: BLE001 - fixed-focus modules have no AF controls
-                    self._log.info(f'[Vision] Autofocus not available on this camera: {exc}')
-            cam.start()
-            props = getattr(cam, 'camera_properties', {}) or {}
-            self._info = f"{props.get('Model', 'unknown model')} {self._width}x{self._height} @ {self._fps:.0f} fps {self._format}"
-        except Exception as exc:  # noqa: BLE001 - libcamera raises many exception types
-            self._log.warning(f'[Vision] picamera2 open failed: {exc!r}')
-            self.release()
+
             return False
-        self._cam = cam
-        return True
 
-    def read(self) -> Optional[np.ndarray]:
-        if self._cam is None:
-            return None
-        try:
-            frame = self._cam.capture_array('main')
-        except Exception as exc:  # noqa: BLE001
-            self._log.warning(f'[Vision] picamera2 capture failed: {exc!r}', throttle_duration_sec=5.0)
-            return None
-        if frame is None or frame.size == 0:
-            return None
-        if frame.ndim == 3 and frame.shape[2] == 4:      # XRGB/XBGR -> drop the padding channel
-            frame = np.ascontiguousarray(frame[:, :, :3])
-        return frame
-
-    def release(self) -> None:
+    def read(self):
         if self._cam is not None:
+            frame = self._cam.capture_array('main')
+
+            # Picamera2의 RGB888 배열은 BGR 순서다.
+            # BGR888 배열은 RGB이므로 BGR로 변환한다.
+            if (
+                frame is not None
+                and self.config['picamera2_format'] == 'BGR888'
+            ):
+                frame = cv2.cvtColor(
+                    frame,
+                    cv2.COLOR_RGB2BGR,
+                )
+
+            return frame
+
+        if self._cap is not None:
+            ok, frame = self._cap.read()
+            return frame if ok else None
+
+        return None
+
+    def close(self):
+        cam, cap = self._cam, self._cap
+
+        self._cam = None
+        self._cap = None
+
+        if cam is not None:
+            # stop 실패와 무관하게 close를 시도한다.
             try:
-                self._cam.stop()
-                self._cam.close()
-            except Exception as exc:  # noqa: BLE001
-                self._log.warning(f'[Vision] Error while closing picamera2: {exc!r}')
-            self._cam = None
+                cam.stop()
+            except Exception:
+                pass
 
-    def describe(self) -> str:
-        return f'picamera2 camera_num={self._camera_num} ({self._info})'
+            try:
+                cam.close()
+            except Exception as exc:
+                self.log.warning(
+                    f'[Camera] Picamera2 close failed: {exc!r}'
+                )
+
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception as exc:
+                self.log.warning(
+                    f'[Camera] OpenCV release failed: {exc!r}'
+                )
 
 
+# ============================================================
+# ROS 노드
+# ============================================================
 class CameraNode(Node):
-    """Camera driver node (CSI / USB UVC / mock)."""
-
-    def __init__(self) -> None:
+    def __init__(self):
+        # launch 또는 --ros-args의 __node remapping으로
+        # 카메라별 노드 이름을 지정할 수 있다.
         super().__init__('camera_node')
 
+        defaults = {
+            'use_camera': False,
+            'camera_backend': 'auto',
+
+            'camera_id': 0,
+            'camera_unique_id': '',
+
+            'image_width': 640,
+            'image_height': 480,
+            'publish_rate_hz': 15.0,
+
+            'frame_id': common.DEFAULT_CAMERA_FRAME_ID,
+            'image_topic': common.TOPIC_IMAGE_RAW,
+            'camera_info_topic': common.TOPIC_CAMERA_INFO,
+
+            'fourcc': '',
+            'gstreamer_pipeline': '',
+
+            'picamera2_format': 'RGB888',
+            'picamera2_autofocus': True,
+            'picamera2_lens_position': 0.0,
+
+            # 실제 보정에 사용한 영상 해상도.
+            # 0이면 보정 해상도가 등록되지 않은 상태다.
+            'calibration_width': 0,
+            'calibration_height': 0,
+
+            'intrinsics.fx': 0.0,
+            'intrinsics.fy': 0.0,
+            'intrinsics.cx': 0.0,
+            'intrinsics.cy': 0.0,
+
+            'distortion.k1': 0.0,
+            'distortion.k2': 0.0,
+            'distortion.p1': 0.0,
+            'distortion.p2': 0.0,
+            'distortion.k3': 0.0,
+
+            'reopen_after_failures': 15,
+            'reopen_interval_sec': 2.0,
+            'heartbeat_period_sec': 5.0,
+        }
+
+        for name, value in defaults.items():
+            self.declare_parameter(name, value)
+
+        self.c = {
+            name: self.get_parameter(name).value
+            for name in defaults
+        }
+
+        self._validate_config()
+
         self._bridge = CvBridge()
-        self._source = None  # type: Optional[FrameSource]
-        self._mock_frame = None  # type: Optional[np.ndarray]
+        self._source = None
 
-        # Heartbeat statistics.
-        self._frames_published = 0
-        self._frames_at_last_heartbeat = 0
-        self._capture_failures = 0
+        self._next_open = 0.0
         self._consecutive_failures = 0
-        self._last_reopen_attempt = 0.0
-        self._size_warning_done = False
+        self._capture_failures = 0
 
-        self._declare_parameters()
-        self._load_parameters()
+        self._published = 0
+        self._last_published = None
+        self._heartbeat_count = 0
+        self._heartbeat_time = time.monotonic()
 
-        self._camera_info_template = self._build_camera_info_template()
+        self._info_reason = None
+        self._warned_size = None
 
-        self._image_pub = self.create_publisher(Image, self._image_topic, qos_profile_sensor_data)
-        self._info_pub = self.create_publisher(CameraInfo, self._camera_info_topic,
-                                               qos_profile_sensor_data)
-
-        if self._mode == MODE_MOCK:
-            self._mock_frame = np.zeros((self._image_height, self._image_width, 3), dtype=np.uint8)
-            self.get_logger().info(
-                f'[Vision] Mock camera mode: publishing black {self._image_width}x{self._image_height} '
-                f'{IMAGE_ENCODING} frames at {self._publish_rate_hz:.1f} Hz (no hardware access)')
+        if not self.c['use_camera']:
+            self._mock = np.zeros(
+                (
+                    self.c['image_height'],
+                    self.c['image_width'],
+                    3,
+                ),
+                dtype=np.uint8,
+            )
         else:
-            if not self._open_camera():
-                self.get_logger().error(
-                    f'[Vision] Could not open any camera (backend={self._backend}). The node stays alive '
-                    f'and retries every {self._reopen_interval_sec:.1f} s. On the Pi check `rpicam-hello` / '
-                    f'`cam -l` (libcamera), for USB cameras `ls /dev/video*`; or run with use_camera:=false '
-                    f'for mock mode.')
+            self._mock = None
 
-        self._capture_timer = self.create_timer(1.0 / self._publish_rate_hz, self._on_capture_timer)
-        self._heartbeat_timer = self.create_timer(self._heartbeat_period_sec, self._on_heartbeat)
+        self._image_pub = self.create_publisher(
+            Image,
+            self.c['image_topic'],
+            qos_profile_sensor_data,
+        )
+
+        self._info_pub = self.create_publisher(
+            CameraInfo,
+            self.c['camera_info_topic'],
+            qos_profile_sensor_data,
+        )
+
+        self._capture_timer = self.create_timer(
+            1.0 / self.c['publish_rate_hz'],
+            self._on_capture,
+        )
+
+        self._heartbeat_timer = self.create_timer(
+            self.c['heartbeat_period_sec'],
+            self._on_heartbeat,
+        )
 
         self.get_logger().info(
-            f'[Vision] camera_node ready: mode={self._mode}, backend={self._backend}, '
-            f'image_topic={self._image_topic}, camera_info_topic={self._camera_info_topic}, '
-            f'frame_id={self._frame_id}')
+            f"[Camera] ready: real={self.c['use_camera']} "
+            f"id={self.c['camera_id']} "
+            f"backend={self.c['camera_backend']} "
+            f"image={self.c['image_topic']} "
+            f"frame={self.c['frame_id']}"
+        )
 
-    # --------------------------------------------------
-    # Parameters
-    # --------------------------------------------------
-    def _declare_parameters(self) -> None:
-        self.declare_parameter('use_camera', False)
-        # Frame source: auto | picamera2 | gstreamer | v4l2 (see module docstring)
-        self.declare_parameter('camera_backend', BACKEND_AUTO)
-        self.declare_parameter('camera_id', 0)              # v4l2 device index / picamera2 camera number
-        self.declare_parameter('image_width', 640)
-        self.declare_parameter('image_height', 480)
-        self.declare_parameter('publish_rate_hz', 15.0)
-        self.declare_parameter('frame_id', DEFAULT_FRAME_ID)
-        # FourCC pixel format request for v4l2, e.g. "MJPG". Empty string = leave the driver default.
-        self.declare_parameter('fourcc', '')
-        # GStreamer pipeline; empty = libcamerasrc pipeline built from width/height/rate.
-        self.declare_parameter('gstreamer_pipeline', '')
-        # picamera2 options
-        self.declare_parameter('picamera2_format', 'RGB888')   # B,G,R byte order = bgr8
-        self.declare_parameter('picamera2_autofocus', True)    # Camera Module 3 has PDAF autofocus
-        self.declare_parameter('image_topic', DEFAULT_IMAGE_TOPIC)
-        self.declare_parameter('camera_info_topic', DEFAULT_CAMERA_INFO_TOPIC)
-        # Intrinsics (pixels). 0.0 means "not calibrated yet".
-        self.declare_parameter('intrinsics.fx', 0.0)
-        self.declare_parameter('intrinsics.fy', 0.0)
-        self.declare_parameter('intrinsics.cx', 0.0)
-        self.declare_parameter('intrinsics.cy', 0.0)
-        # plumb_bob distortion: k1 k2 p1 p2 k3.
-        self.declare_parameter('distortion.k1', 0.0)
-        self.declare_parameter('distortion.k2', 0.0)
-        self.declare_parameter('distortion.p1', 0.0)
-        self.declare_parameter('distortion.p2', 0.0)
-        self.declare_parameter('distortion.k3', 0.0)
-        # Recovery behaviour.
-        self.declare_parameter('reopen_after_failures', 15)
-        self.declare_parameter('reopen_interval_sec', 2.0)
-        self.declare_parameter('heartbeat_period_sec', 5.0)
+    # ======================================================
+    # 설정 검사
+    # ======================================================
+    def _validate_config(self):
+        for key, value in self.c.items():
+            if key in ('use_camera', 'picamera2_autofocus'):
+                if type(value) is not bool:
+                    raise ValueError(
+                        f'{key} must be bool'
+                    )
 
-    def _load_parameters(self) -> None:
-        log = self.get_logger()
-        p = self.get_parameter
+            elif isinstance(value, (int, float)):
+                if (
+                    isinstance(value, bool)
+                    or not math.isfinite(value)
+                ):
+                    raise ValueError(
+                        f'{key} must be finite'
+                    )
 
-        self._mode = MODE_REAL if bool(p('use_camera').value) else MODE_MOCK
-        self._backend = str(p('camera_backend').value).strip().lower() or BACKEND_AUTO
-        if self._backend not in BACKENDS:
-            log.error(f"[Vision] Parameter 'camera_backend'={self._backend!r} must be one of {BACKENDS}; using 'auto'")
-            self._backend = BACKEND_AUTO
-        self._camera_id = int(p('camera_id').value)
-        self._image_width = int(common.positive_or_default(log, 'image_width', p('image_width').value, 640))
-        self._image_height = int(common.positive_or_default(log, 'image_height', p('image_height').value, 480))
-        self._publish_rate_hz = float(common.positive_or_default(log, 'publish_rate_hz',
-                                                                 p('publish_rate_hz').value, 15.0))
-        self._frame_id = str(p('frame_id').value) or DEFAULT_FRAME_ID
-        self._fourcc = str(p('fourcc').value).strip()
-        if self._fourcc and len(self._fourcc) != 4:
-            log.error(f"[Vision] Parameter 'fourcc'={self._fourcc!r} must be exactly 4 characters; ignoring it")
-            self._fourcc = ''
-        self._gstreamer_pipeline = str(p('gstreamer_pipeline').value)
-        self._picamera2_format = str(p('picamera2_format').value).strip() or 'RGB888'
-        self._picamera2_autofocus = bool(p('picamera2_autofocus').value)
-        self._image_topic = str(p('image_topic').value) or DEFAULT_IMAGE_TOPIC
-        self._camera_info_topic = str(p('camera_info_topic').value) or DEFAULT_CAMERA_INFO_TOPIC
+        positive_ints = (
+            'image_width',
+            'image_height',
+            'reopen_after_failures',
+        )
 
-        self._fx = float(p('intrinsics.fx').value)
-        self._fy = float(p('intrinsics.fy').value)
-        self._cx = float(p('intrinsics.cx').value)
-        self._cy = float(p('intrinsics.cy').value)
-        self._dist = [float(p(f'distortion.{k}').value) for k in ('k1', 'k2', 'p1', 'p2', 'k3')]
+        nonnegative_ints = (
+            'camera_id',
+            'calibration_width',
+            'calibration_height',
+        )
 
-        self._reopen_after_failures = max(1, int(p('reopen_after_failures').value))
-        self._reopen_interval_sec = float(common.positive_or_default(log, 'reopen_interval_sec',
-                                                                     p('reopen_interval_sec').value, 2.0))
-        self._heartbeat_period_sec = float(common.positive_or_default(log, 'heartbeat_period_sec',
-                                                                      p('heartbeat_period_sec').value, 5.0))
+        for key in positive_ints + nonnegative_ints:
+            value = self.c[key]
+            lower = 1 if key in positive_ints else 0
 
-        # Calibration state: fx and fy must both be positive and finite.
-        self._calibrated = all(math.isfinite(v) for v in (self._fx, self._fy, self._cx, self._cy)) \
-            and self._fx > 0.0 and self._fy > 0.0
-        if self._calibrated:
-            if self._cx <= 0.0 or self._cy <= 0.0:
-                log.warning('[Vision] intrinsics.fx/fy are set but cx/cy are <= 0; the principal point is '
-                            'probably wrong (expected roughly image centre)')
-            log.info(f'[Vision] Camera intrinsics: fx={self._fx:.2f} fy={self._fy:.2f} '
-                     f'cx={self._cx:.2f} cy={self._cy:.2f} dist={self._dist}')
+            if type(value) is not int or value < lower:
+                raise ValueError(
+                    f'Invalid integer parameter: {key}'
+                )
+
+        for key in (
+            'publish_rate_hz',
+            'reopen_interval_sec',
+            'heartbeat_period_sec',
+        ):
+            if self.c[key] <= 0:
+                raise ValueError(
+                    f'{key} must be > 0'
+                )
+
+        for key in (
+            'picamera2_lens_position',
+            'intrinsics.fx',
+            'intrinsics.fy',
+        ):
+            if self.c[key] < 0:
+                raise ValueError(
+                    f'{key} must be >= 0'
+                )
+
+        for key in (
+            'frame_id',
+            'image_topic',
+            'camera_info_topic',
+        ):
+            if (
+                not isinstance(self.c[key], str)
+                or not self.c[key].strip()
+            ):
+                raise ValueError(
+                    f'{key} must be non-empty text'
+                )
+
+            self.c[key] = self.c[key].strip()
+
+        for key in (
+            'camera_backend',
+            'camera_unique_id',
+            'fourcc',
+            'gstreamer_pipeline',
+            'picamera2_format',
+        ):
+            if not isinstance(self.c[key], str):
+                raise ValueError(
+                    f'{key} must be text'
+                )
+
+            self.c[key] = self.c[key].strip()
+
+        if self.c['camera_backend'] not in (
+            'auto',
+            'picamera2',
+            'gstreamer',
+            'v4l2',
+        ):
+            raise ValueError(
+                'Invalid camera_backend'
+            )
+
+        if (
+            self.c['camera_unique_id']
+            and self.c['camera_backend'] not in (
+                'auto',
+                'picamera2',
+            )
+        ):
+            raise ValueError(
+                'camera_unique_id requires picamera2 or auto'
+            )
+
+        if self.c['picamera2_format'] not in (
+            'RGB888',
+            'BGR888',
+        ):
+            raise ValueError(
+                'picamera2_format must be RGB888 or BGR888'
+            )
+
+        if (
+            self.c['fourcc']
+            and len(self.c['fourcc']) != 4
+        ):
+            raise ValueError(
+                'fourcc must contain exactly 4 characters'
+            )
+
+        w = self.c['calibration_width']
+        h = self.c['calibration_height']
+
+        if (w == 0) != (h == 0):
+            raise ValueError(
+                'Set both calibration_width '
+                'and calibration_height'
+            )
+
+        if w and h and not (
+            0 <= self.c['intrinsics.cx'] < w
+            and 0 <= self.c['intrinsics.cy'] < h
+        ):
+            raise ValueError(
+                'Principal point is outside calibration image'
+            )
+
+    # ======================================================
+    # 카메라 연결
+    # ======================================================
+    def _open_source(self):
+        self._next_open = (
+            time.monotonic()
+            + self.c['reopen_interval_sec']
+        )
+
+        backend = self.c['camera_backend']
+
+        if backend == 'auto':
+            choices = ['picamera2']
+
+            if (
+                self.c['gstreamer_pipeline']
+                and not self.c['camera_unique_id']
+            ):
+                choices.append('gstreamer')
         else:
-            log.warning('[Vision] Camera is NOT calibrated (intrinsics.fx/fy are 0). CameraInfo is published '
-                        'with zeroed K/D/R/P (K[0]==0). AprilTag pose estimation will be disabled '
-                        'until real values are set in vision.yaml. TODO: calibrate the camera.')
+            choices = [backend]
 
-    # --------------------------------------------------
-    # CameraInfo
-    # --------------------------------------------------
-    def _build_camera_info_template(self) -> CameraInfo:
-        """Build the CameraInfo once; only header/size are updated per frame."""
+        # auto에서도 CSI 실패 시 임의의 USB 카메라를 열지 않는다.
+        # USB 카메라는 camera_backend=v4l2로 명시한다.
+        for name in choices:
+            source = CameraSource(
+                name,
+                self.c,
+                self.get_logger(),
+            )
+
+            if not source.open():
+                continue
+
+            try:
+                frame = bgr_frame(source.read())
+
+            except Exception as exc:
+                source.close()
+
+                self.get_logger().warning(
+                    f'[Camera] First frame failed: {exc!r}'
+                )
+
+                continue
+
+            self._source = source
+
+            self.get_logger().info(
+                f'[Camera] opened: {name}'
+            )
+
+            return frame
+
+        raise RuntimeError(
+            'No configured camera backend delivered a frame'
+        )
+
+    # ======================================================
+    # 영상 수신 및 발행
+    # ======================================================
+    def _on_capture(self):
+        try:
+            if not self.c['use_camera']:
+                frame = self._mock
+
+            elif self._source is None:
+                if time.monotonic() < self._next_open:
+                    return
+
+                frame = self._open_source()
+
+            else:
+                frame = self._source.read()
+
+            frame = bgr_frame(frame)
+
+            # 호스트에서 프레임을 받은 직후의 ROS 시각.
+            stamp = self.get_clock().now().to_msg()
+
+            msg = self._bridge.cv2_to_imgmsg(
+                frame,
+                encoding='bgr8',
+            )
+
+            msg.header.stamp = stamp
+            msg.header.frame_id = self.c['frame_id']
+
+            info = self._camera_info(frame, stamp)
+
+            self._info_pub.publish(info)
+            self._image_pub.publish(msg)
+
+            self._published += 1
+            self._last_published = time.monotonic()
+            self._consecutive_failures = 0
+
+        except Exception as exc:
+            self._capture_failures += 1
+            self._consecutive_failures += 1
+
+            self.get_logger().warning(
+                f'[Camera] capture/publish failed: {exc!r}',
+                throttle_duration_sec=5.0,
+            )
+
+            if (
+                self._consecutive_failures
+                >= self.c['reopen_after_failures']
+            ):
+                if self._source is not None:
+                    self._source.close()
+                    self._source = None
+
+                self._next_open = (
+                    time.monotonic()
+                    + self.c['reopen_interval_sec']
+                )
+
+                self._consecutive_failures = 0
+
+    # ======================================================
+    # CameraInfo 생성
+    # ======================================================
+    def _camera_info(self, frame, stamp):
+        c = self.c
+        h, w = frame.shape[:2]
+
+        if (
+            (w, h) != (
+                c['image_width'],
+                c['image_height'],
+            )
+            and self._warned_size != (w, h)
+        ):
+            self._warned_size = (w, h)
+
+            self.get_logger().warning(
+                f'[Camera] Actual frame size: {w}x{h}'
+            )
+
+        reason = 'calibrated'
+
+        if not c['use_camera']:
+            reason = 'mock_image'
+
+        elif (
+            c['intrinsics.fx'] <= 0
+            or c['intrinsics.fy'] <= 0
+        ):
+            reason = 'intrinsics_not_set'
+
+        elif (
+            c['calibration_width'] == 0
+            or c['calibration_height'] == 0
+        ):
+            reason = 'calibration_size_not_set'
+
+        elif (w, h) != (
+            c['calibration_width'],
+            c['calibration_height'],
+        ):
+            reason = 'calibration_size_mismatch'
+
+        elif self._source is None:
+            reason = 'camera_not_open'
+
+        elif (
+            c['camera_backend'] == 'auto'
+            and self._source.backend != 'picamera2'
+        ):
+            reason = 'fallback_backend_uncalibrated'
+
+        elif (
+            self._source.backend == 'picamera2'
+            and c['picamera2_autofocus']
+        ):
+            # 이번 구현에서는 초점이 계속 움직이는 동안
+            # 고정 보정값을 거리·자세 추정에 적용하지 않는다.
+            reason = 'continuous_autofocus'
+
+        # 프레임마다 새로운 메시지를 만든다.
         info = CameraInfo()
-        info.width = self._image_width
-        info.height = self._image_height
-        info.distortion_model = DISTORTION_MODEL_PLUMB_BOB
-        if self._calibrated:
-            fx, fy, cx, cy = self._fx, self._fy, self._cx, self._cy
-            info.d = [float(v) for v in self._dist]
-            info.k = [fx, 0.0, cx,
-                      0.0, fy, cy,
-                      0.0, 0.0, 1.0]
-            # Monocular camera: R is identity and P is K extended with a zero translation column.
-            info.r = [1.0, 0.0, 0.0,
-                      0.0, 1.0, 0.0,
-                      0.0, 0.0, 1.0]
-            info.p = [fx, 0.0, cx, 0.0,
-                      0.0, fy, cy, 0.0,
-                      0.0, 0.0, 1.0, 0.0]
-        else:
-            # sensor_msgs/CameraInfo: an uncalibrated camera leaves D, K, R, P zeroed.
-            info.d = [0.0] * 5
-            info.k = [0.0] * 9
-            info.r = [0.0] * 9
-            info.p = [0.0] * 12
+
+        info.header.stamp = stamp
+        info.header.frame_id = c['frame_id']
+
+        info.width = w
+        info.height = h
+        info.distortion_model = 'plumb_bob'
+
+        info.d = [0.0] * 5
+        info.k = [0.0] * 9
+        info.r = [0.0] * 9
+        info.p = [0.0] * 12
+
+        if reason == 'calibrated':
+            fx = c['intrinsics.fx']
+            fy = c['intrinsics.fy']
+            cx = c['intrinsics.cx']
+            cy = c['intrinsics.cy']
+
+            info.d = [
+                c[f'distortion.{key}']
+                for key in (
+                    'k1',
+                    'k2',
+                    'p1',
+                    'p2',
+                    'k3',
+                )
+            ]
+
+            info.k = [
+                fx, 0.0, cx,
+                0.0, fy, cy,
+                0.0, 0.0, 1.0,
+            ]
+
+            info.r = [
+                1.0, 0.0, 0.0,
+                0.0, 1.0, 0.0,
+                0.0, 0.0, 1.0,
+            ]
+
+            info.p = [
+                fx, 0.0, cx, 0.0,
+                0.0, fy, cy, 0.0,
+                0.0, 0.0, 1.0, 0.0,
+            ]
+
+        if reason != self._info_reason:
+            self._info_reason = reason
+
+            self.get_logger().info(
+                f'[Camera] Calibration state: {reason}'
+            )
+
         return info
 
-    # --------------------------------------------------
-    # Camera handling
-    # --------------------------------------------------
-    def _make_source(self, backend: str) -> FrameSource:
-        log = self.get_logger()
-        if backend == BACKEND_PICAMERA2:
-            return Picamera2Source(self._camera_id, self._image_width, self._image_height,
-                                   self._publish_rate_hz, self._picamera2_format,
-                                   self._picamera2_autofocus, log)
-        if backend == BACKEND_GSTREAMER:
-            return GStreamerSource(self._gstreamer_pipeline, self._image_width, self._image_height,
-                                   self._publish_rate_hz, log)
-        return OpenCvSource(self._camera_id, self._image_width, self._image_height,
-                            self._publish_rate_hz, self._fourcc, log)
+    # ======================================================
+    # 상태 로그
+    # ======================================================
+    def _on_heartbeat(self):
+        now = time.monotonic()
 
-    def _candidate_backends(self) -> List[str]:
-        return list(BACKEND_ORDER_AUTO) if self._backend == BACKEND_AUTO else [self._backend]
+        fps = (
+            self._published - self._heartbeat_count
+        ) / max(
+            now - self._heartbeat_time,
+            1e-9,
+        )
 
-    def _open_camera(self) -> bool:
-        """Open the first backend that both opens AND delivers a frame (a CSI camera can 'open' via V4L2 and never deliver)."""
-        self._release_camera()
-        self._last_reopen_attempt = time.monotonic()
+        self._heartbeat_count = self._published
+        self._heartbeat_time = now
 
-        for backend in self._candidate_backends():
-            source = self._make_source(backend)
-            if not source.open():
-                self.get_logger().info(f'[Vision] Backend {backend}: not available')
-                continue
-            frame = None
-            for _ in range(5):                  # a few tries: libcamera needs a moment for the first frame
-                frame = source.read()
-                if frame is not None:
-                    break
-                time.sleep(0.1)
-            if frame is None:
-                self.get_logger().warning(f'[Vision] Backend {backend} opened but delivered no frame; trying the next one')
-                source.release()
-                continue
-            self._source = source
-            self._consecutive_failures = 0
-            self.get_logger().info(f'[Vision] Camera opened: {source.describe()}')
-            self._check_frame_size(frame)
-            return True
-        return False
+        if self._last_published is None:
+            age = 'never'
+        else:
+            age = f'{now - self._last_published:.2f}s'
 
-    def _check_frame_size(self, frame: np.ndarray) -> None:
-        actual_h, actual_w = frame.shape[:2]
-        if (actual_w, actual_h) != (self._image_width, self._image_height) and not self._size_warning_done:
-            self._size_warning_done = True
-            self.get_logger().warning(
-                f'[Vision] Camera delivers {actual_w}x{actual_h} instead of the requested '
-                f'{self._image_width}x{self._image_height}. CameraInfo width/height follow the real '
-                f'frame, but intrinsics (fx, fy, cx, cy) were calibrated for the requested size '
-                f'and will be wrong if the resolution differs.')
+        backend = (
+            self._source.backend
+            if self._source
+            else 'none'
+        )
 
-    def _release_camera(self) -> None:
+        self.get_logger().info(
+            f'[Camera] alive '
+            f'real={self.c["use_camera"]} '
+            f'backend={backend} '
+            f'fps={fps:.1f} '
+            f'failures={self._capture_failures} '
+            f'last_frame_age={age} '
+            f'calibration={self._info_reason}'
+        )
+
+    # ======================================================
+    # 종료
+    # ======================================================
+    def destroy_node(self):
+        self._capture_timer.cancel()
+        self._heartbeat_timer.cancel()
+
         if self._source is not None:
-            self._source.release()
+            self._source.close()
             self._source = None
 
-    def _maybe_reopen(self) -> None:
-        """Reopen the device after repeated failures, rate limited by reopen_interval_sec."""
-        if self._consecutive_failures < self._reopen_after_failures:
-            return
-        now = time.monotonic()
-        if now - self._last_reopen_attempt < self._reopen_interval_sec:
-            return
-        self.get_logger().warning(
-            f'[Vision] {self._consecutive_failures} consecutive capture failures; reopening the camera')
-        if self._open_camera():
-            self.get_logger().info('[Vision] Camera reopened successfully')
-        else:
-            self.get_logger().error('[Vision] Camera reopen failed; will retry', throttle_duration_sec=10.0)
-
-    def _read_frame(self) -> Optional[np.ndarray]:
-        """Grab one frame from the source. Returns None (and counts the failure) on error."""
-        if self._source is None:
-            self._capture_failures += 1
-            self._consecutive_failures += 1
-            self._maybe_reopen()
-            return None
-        try:
-            frame = self._source.read()
-        except cv2.error as exc:
-            frame = None
-            self.get_logger().warning(f'[Vision] Camera read raised: {exc}', throttle_duration_sec=5.0)
-        if frame is None:
-            self._capture_failures += 1
-            self._consecutive_failures += 1
-            self.get_logger().warning('[Vision] Camera frame read failed', throttle_duration_sec=5.0)
-            self._maybe_reopen()
-            return None
-        self._consecutive_failures = 0
-        return frame
-
-    # --------------------------------------------------
-    # Timers
-    # --------------------------------------------------
-    def _on_capture_timer(self) -> None:
-        try:
-            frame = self._mock_frame if self._mode == MODE_MOCK else self._read_frame()
-            if frame is None:
-                return
-            self._publish_frame(frame)
-        except Exception as exc:  # noqa: BLE001 - last line of defence: a driver hiccup must not kill the node
-            self._capture_failures += 1
-            self.get_logger().error(f'[Vision] Unexpected error in capture loop: {exc!r}', throttle_duration_sec=5.0)
-
-    def _publish_frame(self, frame: np.ndarray) -> None:
-        """Publish the frame and a CameraInfo carrying the identical timestamp."""
-        stamp = self.get_clock().now().to_msg()
-        try:
-            img_msg = self._bridge.cv2_to_imgmsg(frame, encoding=IMAGE_ENCODING)
-        except (CvBridgeError, TypeError, ValueError) as exc:
-            self._capture_failures += 1
-            self.get_logger().error(f'[Vision] cv_bridge conversion failed: {exc}', throttle_duration_sec=5.0)
-            return
-        img_msg.header.stamp = stamp
-        img_msg.header.frame_id = self._frame_id
-
-        info = self._camera_info_template
-        info.header.stamp = stamp
-        info.header.frame_id = self._frame_id
-        info.height = int(frame.shape[0])
-        info.width = int(frame.shape[1])
-
-        self._image_pub.publish(img_msg)
-        self._info_pub.publish(info)
-        self._frames_published += 1
-
-    def _on_heartbeat(self) -> None:
-        published_since_last = self._frames_published - self._frames_at_last_heartbeat
-        self._frames_at_last_heartbeat = self._frames_published
-        fps = published_since_last / self._heartbeat_period_sec
-        camera_open = self._mode == MODE_MOCK or self._source is not None
-        backend = 'mock' if self._mode == MODE_MOCK else (self._source.name if self._source else 'none')
-        self.get_logger().info(
-            f'[Vision] camera alive | mode={self._mode} | backend={backend} | camera_open={camera_open} | '
-            f'frames_published={self._frames_published} | capture_failures={self._capture_failures} | '
-            f'fps={fps:.1f} | calibrated={self._calibrated}')
-
-    # --------------------------------------------------
-    # Shutdown
-    # --------------------------------------------------
-    def destroy_node(self):
-        self._release_camera()
         return super().destroy_node()
 
 
-def main(args=None) -> None:
+def main(args=None):
     rclpy.init(args=args)
     node = None
+
     try:
         node = CameraNode()
         rclpy.spin(node)
+
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
-    except Exception as exc:  # noqa: BLE001 - e.g. a parameter type error in vision.yaml
-        get_logger('camera_node').fatal(f'[Vision] camera_node failed to start or crashed: {exc!r}')
-        raise
+
     finally:
-        if node is not None:
-            node.destroy_node()
-        rclpy.try_shutdown()
+        try:
+            if node is not None:
+                node.destroy_node()
+        finally:
+            rclpy.try_shutdown()
 
 
 if __name__ == '__main__':

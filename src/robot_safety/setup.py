@@ -1,70 +1,79 @@
-# Python 패키지 설치를 위한 setuptools 함수 import
+import os
+
 from setuptools import find_packages, setup
 
-# 패키지 이름
+
 package_name = 'robot_safety'
 
-# 패키지 설치 설정
-setup(
-    # ROS2 패키지 이름
-    name=package_name,
 
-    # 버전
+setup(
+    name=package_name,
     version='0.0.0',
 
-    # robot_safety Python package를 자동으로 찾음
-    # test 폴더는 제외
-    packages=find_packages(exclude=['test']),
+    # 실제 Python 패키지를 설치한다.
+    packages=find_packages(
+        exclude=['test', 'test.*'],
+    ),
 
-    # ROS2가 패키지를 찾기 위해 필요한 파일 설치
     data_files=[
+        # ROS 2 패키지 검색을 위한 등록 파일.
         (
             'share/ament_index/resource_index/packages',
-            ['resource/' + package_name]
+            ['resource/' + package_name],
         ),
+
+        # ROS 2 패키지 정보.
         (
-            'share/' + package_name,
-            ['package.xml']
+            os.path.join('share', package_name),
+            ['package.xml'],
+        ),
+
+        # 안전 설정 파일.
+        # 설치 위치:
+        # <package_share>/config/safety.yaml
+        #
+        # 파일을 만들지 않았다면 빌드 시 오류가 발생한다.
+        (
+            os.path.join('share', package_name, 'config'),
+            ['config/safety.yaml'],
         ),
     ],
 
-    # py.typed 파일 포함
+    # 기존 타입 정보 표시 파일을 유지한다.
     package_data={
-        '': ['py.typed']
+        package_name: ['py.typed'],
     },
 
-    # Python 설치 dependency
+    # ROS 의존성은 package.xml에서 관리한다.
     install_requires=['setuptools'],
 
-    # 압축 설치 가능 여부
     zip_safe=True,
 
-    # 관리자 정보
     maintainer='seojs',
     maintainer_email='seojs@todo.todo',
 
-    # 패키지 설명
-    description='Delivery robot safety package',
+    description=(
+        'Delivery robot safety: velocity command gating, '
+        'E-stop monitoring and LiDAR obstacle detection.'
+    ),
 
-    # 추후 MIT 등으로 변경 가능
+    # 기존 선언 유지. 배포 라이선스는 별도로 확정해야 한다.
     license='TODO: License declaration',
 
-    # 테스트 dependency
     extras_require={
-        'test': [
-            'pytest',
-        ],
+        'test': ['pytest'],
     },
 
-    # ROS2에서 실행 가능한 Python node 등록
     entry_points={
         'console_scripts': [
-
-            # ros2 run robot_safety safety_manager_node
-            'safety_manager_node = robot_safety.safety_manager_node:main',
-
-            # ros2 run robot_safety lidar_obstacle_node
-            'lidar_obstacle_node = robot_safety.lidar_obstacle_node:main',
+            (
+                'safety_manager_node = '
+                'robot_safety.safety_manager_node:main'
+            ),
+            (
+                'lidar_obstacle_node = '
+                'robot_safety.lidar_obstacle_node:main'
+            ),
         ],
     },
 )

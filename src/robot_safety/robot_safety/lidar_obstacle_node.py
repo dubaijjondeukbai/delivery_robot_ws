@@ -1,593 +1,580 @@
-# ============================================================
-# lidar_obstacle_node.py
-# ============================================================
-#
-# 역할:
-#   LiDAR의 /scan 데이터를 받아서
-#   로봇 전방에 장애물이 있는지 판단한다.
-#
-# 입력:
-#   /scan
-#   타입: sensor_msgs/msg/LaserScan
-#
-# 출력:
-#   /safety/obstacle_detected
-#   타입: std_msgs/msg/Bool
-#
-#   /safety/front_distance
-#   타입: std_msgs/msg/Float32
-#
-# 판단 기준:
-#   전방 ±35도
-#   0.8 m 이내에 3개 이상의 LiDAR point가 있으면 STOP
-#   1.0 m 밖으로 충분히 벗어나야 다시 CLEAR
-#
-#   /scan이 0.5초 이상 끊겨도 안전을 위해 STOP
-# ============================================================
+#!/usr/bin/env python3
+"""
+배달로봇 전방 LiDAR 장애물 판단 노드.
 
+입력
+----
+/scan                       sensor_msgs/msg/LaserScan
 
-# Python의 수학 관련 기능을 사용하기 위한 모듈
-# radians(), sin(), cos(), atan2(), isfinite() 등을 사용한다.
+출력
+----
+/safety/obstacle_detected    std_msgs/msg/Bool
+/safety/front_distance       std_msgs/msg/Float32
+
+판단
+----
+- 시작하거나 센서 상태가 불확실하면 STOP.
+- 전방 기본 ±35도를 검사.
+- 기본적으로 0.8m 이내 점이 하나라도 있으면 STOP.
+- 1.0m 이내 점이 없는 정상 스캔이 3회 연속 들어오면 CLEAR.
+- 스캔이 끊기거나 오래된 데이터이면 STOP.
+- 정상 상태에서도 안전 상태를 주기적으로 발행.
+
+거리 출력
+---------
+유효한 거리: 전방에서 가장 가까운 측정값.
+NaN: 데이터 이상 또는 센서 상태 불확실.
++inf: inf_is_clear=True이고 전방 유효 데이터가 모두 +inf인 경우.
+
+주의
+----
+거리는 차체 앞면이 아니라 LiDAR 원점 기준이다.
+전방 부채꼴만 검사하므로 후방 및 회전 중 차체 측면은 보장하지 않는다.
+설정은 시작 시 읽으며, 변경 후에는 노드를 재시작한다.
+"""
+
 import math
 
-# ROS2 Python 라이브러리
 import rclpy
-
-# ROS2 Node 클래스를 가져온다.
+from rclpy.clock import Clock, ClockType
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-
-# LiDAR 메시지 타입
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+)
 from sensor_msgs.msg import LaserScan
-
-# True / False 메시지 타입
-from std_msgs.msg import Bool
-
-# 실수(float) 메시지 타입
-from std_msgs.msg import Float32
+from std_msgs.msg import Bool, Float32
 
 
-# ============================================================
-# LidarObstacleNode 클래스
-# ============================================================
-#
-# Python 문법:
-#
-# class 자식클래스(부모클래스):
-#
-# LidarObstacleNode가 ROS2의 Node를 상속받는다.
-#
-# 따라서 이 클래스 자체가 ROS2 Node가 된다.
-# ============================================================
 class LidarObstacleNode(Node):
+    """전방 장애물과 LiDAR 데이터의 유효성을 검사한다."""
 
-    # --------------------------------------------------------
-    # 생성자
-    # --------------------------------------------------------
-    #
-    # __init__()은 객체가 생성될 때 자동으로 실행된다.
-    # --------------------------------------------------------
     def __init__(self):
-
-        # 부모인 Node의 생성자 실행
-        #
-        # ROS2 node 이름:
-        # /lidar_obstacle_node
         super().__init__('lidar_obstacle_node')
 
+        # --------------------------------------------------
+        # 파라미터
+        # 거리: m / 각도: scan 프레임 기준 degree / 시간: 초
+        # --------------------------------------------------
+        defaults = {
+            'front_angle_deg': 35.0,
+            'front_center_deg': 0.0,
+            'stop_distance': 0.8,
+            'release_distance': 1.0,
+            'min_points': 1,
+            'clear_scans_required': 3,
+            'min_valid_fraction': 0.8,
+            'scan_timeout': 0.5,
+            'max_scan_age_sec': 0.5,
+            'future_tolerance_sec': 0.1,
+            'state_publish_rate_hz': 20.0,
+            'inf_is_clear': False,
+            'expected_scan_frame': 'laser_link',
+            'scan_topic': '/scan',
+            'obstacle_topic': '/safety/obstacle_detected',
+            'distance_topic': '/safety/front_distance',
+        }
 
-        # ====================================================
-        # Parameter 선언
-        # ====================================================
-        #
-        # ROS2 Parameter는 나중에 yaml 파일이나 launch에서
-        # 값을 변경할 수 있는 설정값이다.
-        # ====================================================
+        for name, value in defaults.items():
+            self.declare_parameter(name, value)
 
-        # 로봇 정면을 기준으로 좌우 35도씩 검사
-        self.declare_parameter('front_angle_deg', 35.0)
+        self.front_angle_deg = self._number('front_angle_deg')
+        self.front_center_deg = self._number(
+            'front_center_deg',
+            signed=True,
+        )
+        self.stop_distance = self._number('stop_distance')
+        self.release_distance = self._number('release_distance')
+        self.min_points = self._integer('min_points')
+        self.clear_scans_required = self._integer(
+            'clear_scans_required'
+        )
+        self.min_valid_fraction = self._number(
+            'min_valid_fraction'
+        )
+        self.scan_timeout = self._number('scan_timeout')
+        self.max_scan_age_sec = self._number('max_scan_age_sec')
+        self.future_tolerance_sec = self._number(
+            'future_tolerance_sec'
+        )
+        rate = self._number('state_publish_rate_hz')
 
-        # 이 거리 이하에 장애물이 있으면 정지
-        self.declare_parameter('stop_distance', 0.8)
+        self.inf_is_clear = self.get_parameter(
+            'inf_is_clear'
+        ).value
 
-        # 장애물 정지 상태에서 다시 움직이기 위한 거리
-        self.declare_parameter('release_distance', 1.0)
+        if not isinstance(self.inf_is_clear, bool):
+            raise ValueError('inf_is_clear must be bool')
 
-        # 최소 3개의 point가 잡혀야 장애물로 인정
-        self.declare_parameter('min_points', 3)
-
-        # 0.5초 동안 LiDAR 데이터가 안 오면 센서 이상으로 판단
-        self.declare_parameter('scan_timeout', 0.5)
-
-
-        # ====================================================
-        # Parameter 값 읽기
-        # ====================================================
-
-        self.front_angle_deg = (
-            self.get_parameter('front_angle_deg')
-            .get_parameter_value()
-            .double_value
+        self.expected_scan_frame = self._text(
+            'expected_scan_frame'
         )
 
-        self.stop_distance = (
-            self.get_parameter('stop_distance')
-            .get_parameter_value()
-            .double_value
+        if not 0.0 < self.front_angle_deg <= 90.0:
+            raise ValueError(
+                'front_angle_deg must be in (0, 90]'
+            )
+
+        if self.release_distance <= self.stop_distance:
+            raise ValueError(
+                'release_distance must exceed stop_distance'
+            )
+
+        if self.min_valid_fraction > 1.0:
+            raise ValueError(
+                'min_valid_fraction must be <= 1'
+            )
+
+        self._half_angle = math.radians(self.front_angle_deg)
+        self._center_angle = math.radians(self.front_center_deg)
+
+        # timeout에는 시뮬레이션 시간과 독립적인 시계를 사용한다.
+        self._steady_clock = Clock(
+            clock_type=ClockType.STEADY_TIME
         )
 
-        self.release_distance = (
-            self.get_parameter('release_distance')
-            .get_parameter_value()
-            .double_value
-        )
+        # --------------------------------------------------
+        # 내부 상태
+        # --------------------------------------------------
+        self._last_valid_time = None
+        self._last_valid_stamp = None
+        self._last_ros_time = None
+        self._clear_count = 0
 
-        self.min_points = (
-            self.get_parameter('min_points')
-            .get_parameter_value()
-            .integer_value
-        )
-
-        self.scan_timeout = (
-            self.get_parameter('scan_timeout')
-            .get_parameter_value()
-            .double_value
-        )
-
-
-        # ====================================================
-        # 내부 상태 변수
-        # ====================================================
-
-        # 처음에는 LiDAR가 정상인지 모르기 때문에
-        # 안전을 위해 장애물이 있다고 가정한다.
-        #
-        # 이것을 fail-safe 방식이라고 한다.
         self.obstacle_detected = True
+        self.front_distance = float('nan')
+        self._reason = None
 
-        # 마지막으로 LiDAR 데이터를 받은 시간
-        #
-        # Python의 None:
-        # 아직 값이 없다는 의미
-        self.last_scan_time = None
+        # --------------------------------------------------
+        # QoS
+        # 스캔: 최신 데이터 1개, Best Effort
+        # 상태: 최신 상태 1개, Reliable
+        # --------------------------------------------------
+        scan_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+        )
 
-        # 현재 전방 최소 거리
-        self.front_distance = float('inf')
+        state_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
+        )
 
+        self.obstacle_pub = self.create_publisher(
+            Bool,
+            self._text('obstacle_topic'),
+            state_qos,
+        )
 
-        # ====================================================
-        # Subscriber
-        # ====================================================
-        #
-        # create_subscription(
-        #     메시지 타입,
-        #     topic 이름,
-        #     callback 함수,
-        #     queue 크기
-        # )
-        #
-        # /scan 데이터가 들어올 때마다
-        # self.scan_callback() 함수가 실행된다.
-        # ====================================================
+        self.distance_pub = self.create_publisher(
+            Float32,
+            self._text('distance_topic'),
+            state_qos,
+        )
 
         self.scan_sub = self.create_subscription(
             LaserScan,
-            '/scan',
+            self._text('scan_topic'),
             self.scan_callback,
-            10
+            scan_qos,
         )
-
-
-        # ====================================================
-        # Publisher
-        # ====================================================
-
-        # 장애물 있음/없음을 publish
-        self.obstacle_pub = self.create_publisher(
-            Bool,
-            '/safety/obstacle_detected',
-            10
-        )
-
-        # 전방에서 가장 가까운 장애물 거리 publish
-        self.distance_pub = self.create_publisher(
-            Float32,
-            '/safety/front_distance',
-            10
-        )
-
-
-        # ====================================================
-        # Timer
-        # ====================================================
-        #
-        # 0.1초마다 check_scan_timeout() 실행
-        #
-        # 즉 10 Hz
-        # ====================================================
 
         self.timeout_timer = self.create_timer(
-            0.1,
-            self.check_scan_timeout
+            1.0 / rate,
+            self.check_scan_timeout,
+            clock=self._steady_clock,
         )
 
+        self._trip('waiting_for_scan')
+        self.publish_state()
 
-        # 시작 메시지 출력
-        self.get_logger().info(
-            '[LiDAR] obstacle detector started | '
-            f'ROI=±{self.front_angle_deg:.1f} deg | '
-            f'stop={self.stop_distance:.2f} m | '
-            f'release={self.release_distance:.2f} m'
+    # ======================================================
+    # 파라미터 검증
+    # ======================================================
+    def _number(self, name, signed=False):
+        value = self.get_parameter(name).value
+
+        if isinstance(value, bool) or not isinstance(
+            value, (int, float)
+        ):
+            raise ValueError(f'{name} must be numeric')
+
+        value = float(value)
+
+        if not math.isfinite(value) or (
+            not signed and value <= 0.0
+        ):
+            raise ValueError(f'Invalid {name}: {value}')
+
+        return value
+
+    def _integer(self, name):
+        value = self.get_parameter(name).value
+
+        if type(value) is not int or value < 1:
+            raise ValueError(
+                f'{name} must be a positive integer'
+            )
+
+        return value
+
+    def _text(self, name):
+        value = self.get_parameter(name).value
+
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                f'{name} must be a non-empty string'
+            )
+
+        return value.strip()
+
+    # ======================================================
+    # 시간 및 상태 관리
+    # ======================================================
+    def _now(self):
+        return self._steady_clock.now().nanoseconds * 1e-9
+
+    def _set_state(self, stopped, reason):
+        self.obstacle_detected = stopped
+
+        # 같은 상태의 로그를 매 주기 반복하지 않는다.
+        if reason != self._reason:
+            log = self.get_logger()
+
+            if stopped:
+                log.warning(f'[LiDAR] STOP: {reason}')
+            else:
+                log.info('[LiDAR] CLEAR: front sector clear')
+
+            self._reason = reason
+
+    def _trip(self, reason):
+        """데이터 이상 시 즉시 정지하고 해제 확인을 초기화한다."""
+        self._clear_count = 0
+        self._last_valid_time = None
+        self.front_distance = float('nan')
+        self._set_state(True, reason)
+
+    # ======================================================
+    # 스캔 구조 검사
+    # ======================================================
+    def _metadata_error(self, msg):
+        if msg.header.frame_id != self.expected_scan_frame:
+            return 'unexpected_scan_frame'
+
+        if len(msg.ranges) < 2:
+            return 'empty_or_short_scan'
+
+        values = (
+            msg.angle_min,
+            msg.angle_max,
+            msg.angle_increment,
+            msg.range_min,
+            msg.range_max,
         )
 
+        if not all(math.isfinite(v) for v in values):
+            return 'invalid_scan_metadata'
 
-    # ========================================================
-    # /scan callback
-    # ========================================================
+        if msg.angle_increment == 0.0:
+            return 'zero_angle_increment'
+
+        step = abs(msg.angle_increment)
+        span = (len(msg.ranges) - 1) * step
+
+        expected_end = msg.angle_min + (
+            len(msg.ranges) - 1
+        ) * msg.angle_increment
+
+        if span > 2.0 * math.pi + step:
+            return 'invalid_angular_span'
+
+        if abs(expected_end - msg.angle_max) > max(step, 1e-6):
+            return 'inconsistent_scan_angles'
+
+        if not 0.0 <= msg.range_min < msg.range_max:
+            return 'invalid_range_limits'
+
+        if msg.range_max <= self.release_distance:
+            return 'insufficient_measurement_range'
+
+        if msg.range_min >= self.stop_distance:
+            return 'stop_zone_outside_measurement_range'
+
+        return ''
+
+    # ======================================================
+    # 스캔 촬영 시각 검사
     #
-    # LiDAR 데이터가 들어올 때마다 실행된다.
-    #
-    # msg에는 LaserScan 데이터가 들어온다.
-    # ========================================================
+    # 메시지 timestamp는 ROS 시간과 비교한다.
+    # 통신 timeout용 Steady 시간과 섞지 않는다.
+    # ======================================================
+    def _stamp_error(self, msg):
+        ros_now = self.get_clock().now().nanoseconds
+
+        previous_ros_time = self._last_ros_time
+        self._last_ros_time = ros_now
+
+        # 시뮬레이션 초기화 등으로 ROS 시간이 되돌아간 경우.
+        if (
+            previous_ros_time is not None
+            and ros_now < previous_ros_time
+        ):
+            self._last_valid_stamp = None
+            return 'ros_clock_moved_backwards'
+
+        stamp = msg.header.stamp
+
+        if stamp.sec < 0 or not (
+            0 <= stamp.nanosec < 1000000000
+        ):
+            return 'invalid_scan_stamp'
+
+        stamp_ns = (
+            stamp.sec * 1000000000
+            + stamp.nanosec
+        )
+
+        if ros_now <= 0 or stamp_ns <= 0:
+            return 'waiting_for_valid_clock_and_stamp'
+
+        age = (ros_now - stamp_ns) * 1e-9
+
+        if age >= self.max_scan_age_sec:
+            return 'stale_scan_stamp'
+
+        if age < -self.future_tolerance_sec:
+            return 'scan_stamp_in_future'
+
+        # 같은 스캔을 반복해서 받아도 정상 연속 스캔으로 세지 않는다.
+        if (
+            self._last_valid_stamp is not None
+            and stamp_ns <= self._last_valid_stamp
+        ):
+            return 'repeated_or_reversed_scan_stamp'
+
+        return ''
+
+    # ======================================================
+    # 스캔 수신
+    # ======================================================
     def scan_callback(self, msg):
+        now = self._now()
 
-        # 현재 시각 저장
-        #
-        # scan이 정상적으로 계속 들어오는지 확인하기 위해 사용
-        self.last_scan_time = self.get_clock().now()
+        # 타이머가 지연됐더라도 통신 공백을 놓치지 않는다.
+        if (
+            self._last_valid_time is not None
+            and now - self._last_valid_time >= self.scan_timeout
+        ):
+            self._trip('scan_timeout')
 
-
-        # degree → radian 변환
-        #
-        # LiDAR 각도는 기본적으로 radian을 사용한다.
-        front_angle_rad = math.radians(
-            self.front_angle_deg
+        error = (
+            self._metadata_error(msg)
+            or self._stamp_error(msg)
         )
 
+        if error:
+            self._trip(error)
+            self.publish_state()
+            return
 
-        # 전방 영역의 거리 데이터만 저장할 list
-        #
-        # [] = Python list
-        valid_front_ranges = []
+        front_count = 0
+        valid_count = 0
+        close_count = 0
+        release_count = 0
+        nearest = float('inf')
 
+        for index, distance in enumerate(msg.ranges):
+            angle = (
+                msg.angle_min
+                + index * msg.angle_increment
+                - self._center_angle
+            )
 
-        # ====================================================
-        # LiDAR point 하나씩 검사
-        # ====================================================
-        #
-        # enumerate():
-        #
-        # index와 값을 동시에 가져오는 Python 함수
-        #
-        # 예:
-        #
-        # ranges = [1.0, 2.0, 3.0]
-        #
-        # i = 0, distance = 1.0
-        # i = 1, distance = 2.0
-        # i = 2, distance = 3.0
-        # ====================================================
+            # -pi ~ +pi로 정규화한다.
+            relative = math.atan2(
+                math.sin(angle),
+                math.cos(angle),
+            )
 
-        for i, distance in enumerate(msg.ranges):
+            if abs(relative) > self._half_angle + 1e-9:
+                continue
 
-            # NaN 또는 infinity 값 제거
-            #
-            # continue:
-            # 현재 반복을 건너뛰고 다음 반복으로 이동
+            front_count += 1
+
+            # +inf가 정상적인 "반사체 없음"이라는 것이 확인된
+            # 드라이버에서만 inf_is_clear=True를 사용한다.
+            if (
+                math.isinf(distance)
+                and distance > 0
+                and self.inf_is_clear
+            ):
+                valid_count += 1
+                continue
+
             if not math.isfinite(distance):
                 continue
 
-            # LiDAR 최소 측정거리보다 작으면 무시
-            if distance < msg.range_min:
+            if not (
+                msg.range_min <= distance <= msg.range_max
+            ):
                 continue
 
-            # LiDAR 최대 측정거리보다 크면 무시
-            if distance > msg.range_max:
-                continue
+            valid_count += 1
+            nearest = min(nearest, distance)
 
-
-            # 현재 point의 각도 계산
-            #
-            # angle_min:
-            # 첫 번째 LiDAR point의 각도
-            #
-            # angle_increment:
-            # point 하나당 증가하는 각도
-            angle = (
-                msg.angle_min
-                + i * msg.angle_increment
+            close_count += int(
+                distance <= self.stop_distance
+            )
+            release_count += int(
+                distance <= self.release_distance
             )
 
-
-            # 각도를 -pi ~ +pi 범위로 정규화
-            angle = math.atan2(
-                math.sin(angle),
-                math.cos(angle)
-            )
-
-
-            # 로봇 전방 ±35도 안에 있는 데이터만 사용
-            #
-            # abs():
-            # 절댓값 함수
-            if abs(angle) <= front_angle_rad:
-
-                # list 끝에 distance 추가
-                valid_front_ranges.append(distance)
-
-
-        # ====================================================
-        # 전방 데이터가 하나도 없는 경우
-        # ====================================================
-
-        if len(valid_front_ranges) == 0:
-
-            # 센서 상태가 불확실하므로 STOP
-            self.update_obstacle_state(
-                True,
-                float('inf'),
-                'no valid front scan'
-            )
-
-            # 함수 종료
-            return
-
-
-        # ====================================================
-        # 가장 가까운 point 거리
-        # ====================================================
-
-        min_distance = min(valid_front_ranges)
-
-        self.front_distance = min_distance
-
-
-        # ====================================================
-        # 장애물이 없는 상태
-        # ====================================================
-        #
-        # Python:
-        #
-        # if not False:
-        #     → True
-        #
-        # 따라서 obstacle_detected가 False일 때 실행
-        # ====================================================
-
-        if not self.obstacle_detected:
-
-            # 0.8m 이하의 point 개수 계산
-            #
-            # 아래는 Python generator 표현식
-            close_points = sum(
-                1
-                for r in valid_front_ranges
-                if r <= self.stop_distance
-            )
-
-
-            # 가까운 point가 3개 이상이면
-            if close_points >= self.min_points:
-
-                # 장애물 있음으로 변경
-                self.update_obstacle_state(
-                    True,
-                    min_distance,
-                    'obstacle entered stop zone'
-                )
-
-            else:
-
-                # 상태 변화 없음
-                self.publish_state()
-
-
-        # ====================================================
-        # 이미 장애물 때문에 STOP 상태
-        # ====================================================
-        else:
-
-            # 이번에는 release_distance = 1.0m를 사용
-            close_points = sum(
-                1
-                for r in valid_front_ranges
-                if r <= self.release_distance
-            )
-
-
-            # 1.0m 안쪽 point가 3개 미만이면
-            # 장애물이 충분히 멀어졌다고 판단
-            if close_points < self.min_points:
-
-                self.update_obstacle_state(
-                    False,
-                    min_distance,
-                    'obstacle cleared'
-                )
-
-            else:
-
-                self.publish_state()
-
-
-    # ========================================================
-    # LiDAR timeout 확인
-    # ========================================================
-    def check_scan_timeout(self):
-
-        # LiDAR를 한 번도 받은 적이 없는 경우
-        if self.last_scan_time is None:
-
-            self.obstacle_detected = True
-            self.publish_state()
-
-            return
-
-
-        # 현재 시각
-        now = self.get_clock().now()
-
-
-        # 시간 차이 계산
-        #
-        # nanoseconds / 1e9
-        #
-        # → 초(second) 단위로 변환
-        elapsed = (
-            now - self.last_scan_time
-        ).nanoseconds / 1e9
-
-
-        # 0.5초 이상 LiDAR가 끊긴 경우
-        if elapsed > self.scan_timeout:
-
-            # 이전에는 주행 가능 상태였다면
-            if not self.obstacle_detected:
-
-                self.get_logger().error(
-                    '[LiDAR] scan timeout -> FAIL-SAFE STOP'
-                )
-
-            # 안전을 위해 장애물 있음 상태
-            self.obstacle_detected = True
-
-            self.publish_state()
-
-
-    # ========================================================
-    # 장애물 상태 변경 함수
-    # ========================================================
-    def update_obstacle_state(
-        self,
-        new_state,
-        distance,
-        reason=''
-    ):
-
-        # 기존 상태와 새로운 상태가 다른지 확인
-        #
-        # !=
-        # "같지 않다"라는 Python 비교 연산자
-        state_changed = (
-            new_state != self.obstacle_detected
+        # 설정한 전방 각도 범위 대부분이 스캔에 포함돼야 한다.
+        # 작은 일부 영역만 보고 전방 전체가 안전하다고 판단하지 않는다.
+        required = max(
+            self.min_points,
+            3,
+            math.ceil(
+                0.9
+                * 2.0
+                * self._half_angle
+                / abs(msg.angle_increment)
+            ),
         )
 
+        if front_count < required:
+            self._trip('insufficient_front_coverage')
 
-        # 새로운 상태 저장
-        self.obstacle_detected = new_state
+        elif valid_count < max(
+            self.min_points,
+            math.ceil(
+                front_count * self.min_valid_fraction
+            ),
+        ):
+            self._trip('insufficient_valid_front_ranges')
 
-        self.front_distance = distance
+        else:
+            self._last_valid_time = now
 
+            stamp = msg.header.stamp
+            self._last_valid_stamp = (
+                stamp.sec * 1000000000
+                + stamp.nanosec
+            )
 
-        # 상태가 실제로 바뀐 경우에만 로그 출력
-        if state_changed:
+            self.front_distance = nearest
 
-            # True면 장애물 감지
-            if new_state:
-
-                self.get_logger().warn(
-                    f'[LiDAR] STOP | '
-                    f'distance={distance:.2f} m | '
-                    f'{reason}'
+            # 정지는 지연 없이 적용한다.
+            if close_count >= self.min_points:
+                self._clear_count = 0
+                self._set_state(
+                    True,
+                    'obstacle_in_stop_zone',
                 )
 
-            # False면 장애물 해제
-            else:
+            elif self.obstacle_detected:
+                # 해제는 release_distance 안에 점이 하나도 없는
+                # 정상 스캔이 연속으로 들어와야 한다.
+                if release_count == 0:
+                    self._clear_count += 1
+                else:
+                    self._clear_count = 0
 
-                self.get_logger().info(
-                    f'[LiDAR] CLEAR | '
-                    f'distance={distance:.2f} m | '
-                    f'{reason}'
-                )
+                if (
+                    self._clear_count
+                    >= self.clear_scans_required
+                ):
+                    self._clear_count = 0
+                    self._set_state(False, 'front_clear')
 
+                else:
+                    self._set_state(
+                        True,
+                        'waiting_for_clear_scans',
+                    )
 
-        # ROS2 topic으로 상태 publish
         self.publish_state()
 
+    # ======================================================
+    # 주기적 데이터 유효성 검사 및 상태 발행
+    # ======================================================
+    def check_scan_timeout(self):
+        if self._last_valid_time is not None:
+            steady_age = (
+                self._now() - self._last_valid_time
+            )
 
-    # ========================================================
-    # 상태 publish 함수
-    # ========================================================
+            ros_age = (
+                self.get_clock().now().nanoseconds
+                - self._last_valid_stamp
+            ) * 1e-9
+
+            if steady_age >= self.scan_timeout:
+                self._trip('scan_timeout')
+
+            elif ros_age >= self.max_scan_age_sec:
+                self._trip('stale_scan_stamp')
+
+            elif ros_age < -self.future_tolerance_sec:
+                self._trip('ros_clock_changed')
+
+        # 정상 상태에서도 계속 발행한다.
+        # Safety Manager의 obstacle_timeout_sec와 연결된다.
+        self.publish_state()
+
     def publish_state(self):
-
-        # Bool 메시지 생성
-        obstacle_msg = Bool()
-
-        # 메시지의 data에 True/False 저장
-        obstacle_msg.data = self.obstacle_detected
-
-        # publish
-        self.obstacle_pub.publish(obstacle_msg)
-
-
-        # Float32 메시지 생성
-        distance_msg = Float32()
-
-        # Python float으로 변환해서 저장
-        distance_msg.data = float(
-            self.front_distance
+        self.obstacle_pub.publish(
+            Bool(data=self.obstacle_detected)
         )
 
-        # publish
-        self.distance_pub.publish(distance_msg)
+        self.distance_pub.publish(
+            Float32(data=float(self.front_distance))
+        )
+
+    # ======================================================
+    # 종료 처리
+    # ======================================================
+    def stop(self):
+        self.timeout_timer.cancel()
+        self._trip('shutdown')
+
+        if self.context.ok():
+            try:
+                self.publish_state()
+            except Exception:
+                # 종료 중 통신 예외가 자원 해제를 막지 않도록 한다.
+                pass
 
 
-# ============================================================
-# main()
-# ============================================================
-#
-# setup.py에서
-#
-# lidar_obstacle_node =
-# robot_safety.lidar_obstacle_node:main
-#
-# 이라고 등록했기 때문에 이 함수가 실행된다.
-# ============================================================
 def main(args=None):
-
-    # ROS2 초기화
     rclpy.init(args=args)
-
-
-    # LidarObstacleNode 객체 생성
-    #
-    # 이 순간 __init__() 실행
-    node = LidarObstacleNode()
-
+    node = None
 
     try:
-
-        # 노드를 계속 실행
-        #
-        # subscriber callback과 timer callback이
-        # 계속 처리된다.
+        node = LidarObstacleNode()
         rclpy.spin(node)
 
-    # Ctrl+C 입력 시 발생
-    except KeyboardInterrupt:
-
-        # 아무 작업 없이 넘어감
-        #
-        # pass = Python에서 "아무것도 하지 않음"
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
 
+    finally:
+        try:
+            if node is not None:
+                try:
+                    node.stop()
+                finally:
+                    node.destroy_node()
+        finally:
+            rclpy.try_shutdown()
 
-    # node 종료
-    node.destroy_node()
 
-    # ROS2 종료
-    rclpy.shutdown()
-
-
-# ============================================================
-# 직접 실행된 파일인지 확인
-# ============================================================
-#
-# Python 파일을 직접 실행하면
-#
-# __name__ == '__main__'
-#
-# 이 된다.
-# ============================================================
 if __name__ == '__main__':
-
     main()

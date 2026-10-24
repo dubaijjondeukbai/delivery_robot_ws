@@ -1,43 +1,54 @@
-# ~/delivery_robot_ws/src/robot_navigation/config/localization.yaml
+# ============================================================
+# localization.yaml
+# ============================================================
+# robot_navigation launch에서 읽는 연결 설정 파일.
+# ROS 노드에 직접 전달하는 ros__parameters 형식이 아니다.
+# launch_common.py가 토픽 remapping, launch 기본값,
+# 선택적인 센서 static TF 생성에 사용한다.
 #
-# "Wiring" file for robot_navigation: topic names, sensor mounting TF, launch defaults.
-# NOTE: this is NOT a ROS parameter file (no ros__parameters). The launch files read it
-#       with PyYAML; see the explanation block below.
-# NOTE: numeric values (sensor offsets) are placeholders -> TODO: tune on the real robot.
+# TF 발행 담당:
+#   map -> odom:
+#     AMCL 또는 slam_toolbox 중 실행 모드에 맞는 하나
+#
+#   odom -> base_link:
+#     EKF
+#
+#   base_link -> 센서/body_link/base_footprint:
+#     robot_state_publisher
+#
+# 프레임 이름은 각 노드의 파라미터 파일에서도 관리된다.
+# 프레임 변경 시 ekf/amcl/slam/nav2.yaml도 확인한다.
+# ============================================================
 
-# =============================================================================
-# robot_navigation "wiring" file
-#
-# This is NOT a ROS parameter file. The three launch files read it with PyYAML
-# and turn it into launch-argument defaults, topic remappings and the static
-# sensor transforms. Change topic names HERE (or override per run with
-# ros2 launch ... scan_topic:=/my/scan); the node parameter files
-# (ekf.yaml, slam.yaml, amcl.yaml, nav2.yaml) only use the *relative* names
-# scan / odom / map / wheel/odom / imu/data, which the launch files remap.
-#
-#   LiDAR driver ──/scan──────────┐
-#   robot_bridge ──/wheel/odom────┼──► ekf_filter_node ──/odom (+ odom->base_link TF)
-#   IMU driver   ──/imu/data──────┘             │
-#                                               ▼
-#   map_server ──/map──► amcl (map->odom TF) ◄──/scan
-#                                               │
-#                                               ▼
-#                 Nav2 ──/cmd_vel_auto──► robot_safety ──/cmd_vel_safe──► robot_control ──► robot_bridge ──► STM32
-# =============================================================================
 
 topics:
-  scan: /scan                 # sensor_msgs/LaserScan from the LiDAR driver
-  wheel_odom: /wheel/odom     # nav_msgs/Odometry, RAW wheel odometry from robot_bridge (must NOT broadcast TF)
-  imu: /imu/data              # sensor_msgs/Imu, REP-103 (x forward, y left, z up), gyro z = +yaw rate
-  odom: /odom                 # EKF output. Nothing else may publish this topic or the odom->base_link TF
-  map: /map                   # nav_msgs/OccupancyGrid from map_server (localization) or slam_toolbox (mapping)
-  # Nav2 velocity output. With motion_enabled:=true this goes to robot_safety; with the default
-  # motion_enabled:=false it goes to cmd_vel_dry_run, which nothing consumes (planning only, no motion).
+  # LiDAR: sensor_msgs/msg/LaserScan
+  scan: /scan
+
+  # 원시 바퀴 오도메트리: nav_msgs/msg/Odometry
+  # 이 입력의 발행자가 odom -> base_link TF를
+  # 중복 발행하지 않도록 한다.
+  wheel_odom: /wheel/odom
+
+  # IMU: sensor_msgs/msg/Imu
+  imu: /imu/data
+
+  # EKF 출력: nav_msgs/msg/Odometry
+  odom: /odom
+
+  # 지도: nav_msgs/msg/OccupancyGrid
+  map: /map
+
+  # motion_enabled:=true일 때
+  # Nav2 출력이 향하는 안전 관리자 입력
   cmd_vel_out: /cmd_vel_auto
+
+  # motion_enabled:=false일 때
+  # 주행 명령을 관찰하기 위한 토픽
+  # 모터 입력으로 연결하지 않는다.
   cmd_vel_dry_run: /cmd_vel_nav_dry_run
 
-# REP-105 frame names. They are also written into ekf.yaml / slam.yaml / amcl.yaml / nav2.yaml
-# (frames are parameters, not remappable). If you rename one, grep all four files.
+
 frames:
   map: map
   odom: odom
@@ -45,26 +56,85 @@ frames:
   laser: laser_link
   imu: imu_link
 
-# Static transforms base_link -> sensor. Required by AMCL, slam_toolbox and the costmaps.
-# Set publish: false as soon as robot_bringup publishes them (URDF + robot_state_publisher),
-# otherwise two publishers fight over the same frame.
+
 sensor_tf:
-  publish: true
-  laser:                      # TODO: measure on the real robot (metres / radians, base_link origin = robot centre on the floor)
-    x: 0.15
-    y: 0.0
-    z: 0.25
-    roll: 0.0
-    pitch: 0.0
-    yaw: 0.0                  # RPLIDAR A2: yaw = 3.14159 if the cable/notch points forward and scans appear mirrored
-  imu:                        # TODO: measure on the real robot
+  # 기본적으로 URDF + robot_state_publisher가
+  # 센서 TF를 발행한다.
+  #
+  # navigation을 단독 실행할 때도
+  # description을 별도로 실행한다.
+  publish: false
+
+  # 아래는 publish_sensor_tf:=true를 명시했을 때
+  # 사용하는 예비값이다.
+  #
+  # URDF의 센서 TF 발행과 동시에 사용하지 않는다.
+  #
+  # 최신 실측값이 아니라 9·10번 모델과 일치시킨
+  # 기존 근사값이다.
+  #
+  # robot_params.xacro의 장착 위치가 바뀌면
+  # 이 예비값도 함께 갱신한다.
+  #
+  # xyz: base_link 기준 위치, 단위 m
+  # rpy: 회전각, 단위 rad
+
+  laser:
     x: 0.0
     y: 0.0
-    z: 0.10
+
+    # 바닥 기준 스캔 높이 - 바퀴 축 높이
+    # 0.700 - 0.0857
+    z: 0.6143
+
+    roll: 0.0
+    pitch: 0.0
+
+    # 센서의 실제 전방 축을 확인한 뒤 설정한다.
+    yaw: 0.0
+
+  imu:
+    x: 0.0
+    y: 0.0
+
+    # 바닥 기준 IMU 높이 - 바퀴 축 높이
+    # 0.100 - 0.0857
+    z: 0.0143
+
     roll: 0.0
     pitch: 0.0
     yaw: 0.0
 
+
 defaults:
+  # Gazebo에서는 launch의 use_sim_time:=true로 덮어쓴다.
   use_sim_time: false
-  autostart: true             # lifecycle managers bring map_server/amcl/Nav2 to ACTIVE automatically
+
+  # lifecycle 노드를 자동 활성화한다.
+  autostart: true
+
+  # 다음 12번 launch_common.py에서
+  # launch 인자/노드 파라미터로 연결한다.
+  #
+  # lifecycle 노드의 bond 응답 제한 시간, 단위 초
+  bond_timeout: 10.0
+
+  # 다음 12·13번에서 AMCL에 연결한다.
+  #
+  # 실물에서는 초기 위치를 명시적으로 제공받도록
+  # 기본값을 false로 둔다.
+  set_initial_pose: false
+
+  # set_initial_pose=true로 실행할 때 사용할
+  # map 좌표계의 초기 위치 추정값
+  #
+  # 시뮬레이션에서도 실제 spawn 위치와
+  # 일치하는지 확인한다.
+  #
+  # 초기 추정값을 지정하는 것만으로
+  # 위치 추정 성공이 보장되지는 않는다.
+  initial_pose:
+    x: 0.0
+    y: 0.0
+    z: 0.0
+    yaw: 0.0

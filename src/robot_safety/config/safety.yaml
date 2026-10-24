@@ -1,0 +1,119 @@
+# robot_safety/config/safety.yaml
+#
+# 안전 노드 공통 설정.
+# 거리: m / 속도: m/s / 각속도: rad/s / 시간: 초
+#
+# float 파라미터는 소수점 포함:
+#   1.0, 0.5
+#
+# integer 파라미터는 소수점 없이:
+#   min_points: 1
+#   clear_scans_required: 3
+#
+# 두 노드는 시작 시 설정을 읽는다.
+# 변경 후에는 노드를 재시작한다.
+#
+# 아래 수치는 실물 검증 전 초기값이다.
+
+safety_manager_node:
+  ros__parameters:
+    # 실물: false
+    # Gazebo / rosbag 시뮬레이션 시간 사용 시: true
+    use_sim_time: false
+
+    # 안전 검사 및 최종 속도 출력 주기.
+    # callback에서도 즉시 검사하므로 실제 출력 빈도는 더 높을 수 있다.
+    control_rate_hz: 20.0
+
+    # 이 시간 이상 속도 명령이 없으면 정지.
+    cmd_timeout_sec: 0.5
+
+    # LiDAR 장애물 판단 노드의 상태 발행이 끊기면 정지.
+    # 아래 lidar_obstacle_node의 20Hz 발행과 연결된다.
+    obstacle_timeout_sec: 0.5
+
+    # E-stop 상태 발행이 끊기면 정지.
+    # 정상 상태인 false도 주기적으로 발행해야 한다.
+    estop_timeout_sec: 1.0
+
+    # 최종 출력 속도 제한.
+    max_linear_velocity: 0.3
+    max_angular_velocity: 0.5
+
+    # 후방 안전 판단을 구현하기 전까지 후진 금지.
+    # 후진 속도의 크기를 양수로 설정하는 파라미터다.
+    max_reverse_velocity: 0.0
+
+    # 입력 토픽.
+    cmd_vel_auto_topic: /cmd_vel_auto
+    estop_topic: /estop_state
+    obstacle_topic: /safety/obstacle_detected
+
+    # 출력 토픽.
+    # 모터 제어 측은 이 토픽을 입력으로 사용해야 한다.
+    cmd_vel_safe_topic: /cmd_vel_safe
+
+
+lidar_obstacle_node:
+  ros__parameters:
+    # Safety Manager 및 LiDAR 발행자와 시간 설정을 맞춘다.
+    use_sim_time: false
+
+    # 전방 판단 영역.
+    # front_center_deg는 LaserScan 프레임에서 로봇 정면의 각도다.
+    # 0도가 실제 정면인지 설치 방향과 TF를 확인해야 한다.
+    front_center_deg: 0.0
+    front_angle_deg: 35.0
+
+    # LiDAR 원점 기준 거리.
+    # 차체 앞면에서의 여유 거리를 뜻하지 않는다.
+    stop_distance: 0.8
+    release_distance: 1.0
+
+    # 정지 거리 안의 유효한 점이 1개만 있어도 STOP.
+    # 값을 높이면 얇은 장애물을 놓칠 수 있다.
+    min_points: 1
+
+    # 정지 해제 조건:
+    # release_distance 안에 점이 없는 정상 스캔이
+    # 아래 횟수만큼 연속으로 들어와야 CLEAR.
+    clear_scans_required: 3
+
+    # 전방 영역 데이터 중 유효해야 하는 최소 비율.
+    # 부족하면 장애물 없음으로 판단하지 않고 STOP.
+    min_valid_fraction: 0.8
+
+    # 유효 스캔 수신이 끊겼다고 판단하는 시간.
+    # 시뮬레이션 시간과 독립된 시계를 사용한다.
+    scan_timeout: 0.5
+
+    # LaserScan의 header.stamp 기준 최대 데이터 나이.
+    # ROS 시간과 비교하므로 발행자의 시간 기준이 일치해야 한다.
+    max_scan_age_sec: 0.5
+
+    # 미래 시각의 스캔을 허용하는 최대 오차.
+    future_tolerance_sec: 0.1
+
+    # 정상 상태에서도 안전 상태를 계속 발행한다.
+    state_publish_rate_hz: 20.0
+
+    # +inf를 정상적인 "반사체 없음"으로 취급할지 결정한다.
+    # 실제 드라이버의 출력 의미를 확인하기 전에는 false 유지.
+    inf_is_clear: false
+
+    # 실제 /scan의 header.frame_id와 일치해야 한다.
+    # 프레임 이름만 바꾸지 말고 TF 연결도 확인해야 한다.
+    expected_scan_frame: laser_link
+
+    # 입력.
+    scan_topic: /scan
+
+    # 출력.
+    # True: 장애물 감지 또는 센서 상태 불확실.
+    # False: 설정한 전방 영역이 해제 조건을 만족.
+    obstacle_topic: /safety/obstacle_detected
+
+    # 전방 최소 거리.
+    # NaN: 데이터 이상 / 불확실.
+    # +inf: inf_is_clear=true이고 유효 데이터가 모두 +inf.
+    distance_topic: /safety/front_distance

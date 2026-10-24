@@ -1,24 +1,10 @@
-"""
-[Navigation] launch_common
-
-Helpers shared by the robot_navigation launch files.
-
-Plain functions, no wrapper classes. They read config/localization.yaml (the
-"wiring" file: topic names, sensor mounting, launch defaults) and turn it into
-
-  * launch-argument declarations whose defaults come from that file,
-  * the topic remappings that connect the relative names used inside
-    ekf.yaml / slam.yaml / amcl.yaml / nav2.yaml to the real robot topics,
-  * the EKF node and the static base_link->sensor transforms that both the
-    mapping and the localization launch need.
-
-Keeping this in one module guarantees that mapping, localization and
-navigation agree on every topic name.
-"""
+"""robot_navigation의 설정 읽기와 공통 launch 구성 함수."""
 
 from __future__ import annotations
 
+import math
 import os
+import re
 from typing import Dict, List
 
 import yaml
@@ -27,12 +13,43 @@ from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
+
 
 PACKAGE_NAME = 'robot_navigation'
 WIRING_FILE = 'localization.yaml'
 
-REQUIRED_WIRING_KEYS = ('topics', 'frames', 'sensor_tf', 'defaults')
-REQUIRED_TOPICS = ('scan', 'wheel_odom', 'imu', 'odom', 'map', 'cmd_vel_out', 'cmd_vel_dry_run')
+REQUIRED_WIRING_KEYS = (
+    'topics',
+    'frames',
+    'sensor_tf',
+    'defaults',
+)
+
+REQUIRED_TOPICS = (
+    'scan',
+    'wheel_odom',
+    'imu',
+    'odom',
+    'map',
+    'cmd_vel_out',
+    'cmd_vel_dry_run',
+)
+
+REQUIRED_FRAMES = (
+    'map',
+    'odom',
+    'base_link',
+    'laser',
+    'imu',
+)
+
+MOUNT_FIELDS = ('x', 'y', 'z', 'roll', 'pitch', 'yaw')
+POSE_FIELDS = ('x', 'y', 'z', 'yaw')
+
+TOPIC_PATTERN = re.compile(
+    r'/(?:[A-Za-z_][A-Za-z0-9_]*)(?:/[A-Za-z_][A-Za-z0-9_]*)*'
+)
 
 
 def package_share() -> str:
@@ -40,63 +57,276 @@ def package_share() -> str:
 
 
 def config_path(file_name: str) -> str:
-    """Absolute path of a file in the installed config/ directory."""
     return os.path.join(package_share(), 'config', file_name)
 
 
+def _mapping(value, label: str) -> Dict:
+    if not isinstance(value, dict):
+        raise RuntimeError(
+            f'{label}: expected a YAML mapping'
+        )
+    return value
+
+
+def _text(value, label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or any(c.isspace() for c in value)
+    ):
+        raise RuntimeError(
+            f'{label}: expected nonempty text without whitespace'
+        )
+    return value
+
+
+def _boolean(value, label: str) -> bool:
+    if type(value) is not bool:
+        raise RuntimeError(
+            f'{label}: use YAML true/false without quotes'
+        )
+    return value
+
+
+def _number(value, label: str, minimum=None) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+    ):
+        raise RuntimeError(
+            f'{label}: expected a number'
+        )
+
+    result = float(value)
+
+    if (
+        not math.isfinite(result)
+        or (minimum is not None and result < minimum)
+    ):
+        raise RuntimeError(
+            f'{label}: invalid numeric value {value!r}'
+        )
+
+    return result
+
+
 def load_wiring(path: str | None = None) -> Dict:
-    """Read the wiring file and fail loudly on a missing section (a typo here must not become a silent no-op)."""
+    """localization.yaml을 읽고 설정 형식과 범위를 검사한다."""
+
     path = path or config_path(WIRING_FILE)
-    with open(path, 'r', encoding='utf-8') as handle:
-        wiring = yaml.safe_load(handle) or {}
-    missing = [key for key in REQUIRED_WIRING_KEYS if key not in wiring]
-    if missing:
-        raise RuntimeError(f'{path}: missing section(s) {missing}')
-    missing_topics = [key for key in REQUIRED_TOPICS if key not in wiring['topics']]
-    if missing_topics:
-        raise RuntimeError(f'{path}: topics section is missing {missing_topics}')
+
+    try:
+        with open(path, 'r', encoding='utf-8') as handle:
+            wiring = yaml.safe_load(handle)
+
+    except (OSError, yaml.YAMLError) as exc:
+        raise RuntimeError(
+            f'{path}: cannot read wiring YAML: {exc}'
+        ) from exc
+
+    wiring = _mapping(wiring, str(path))
+
+    # 필수 설정 구역 확인
+    for key in REQUIRED_WIRING_KEYS:
+        if key not in wiring:
+            raise RuntimeError(
+                f'{path}: missing section {key!r}'
+            )
+
+        _mapping(wiring[key], f'{path}: {key}')
+
+    # 토픽 이름 확인
+    topics = wiring['topics']
+
+    for key in REQUIRED_TOPICS:
+        value = _text(
+            topics.get(key),
+            f'{path}: topics.{key}',
+        )
+
+        if TOPIC_PATTERN.fullmatch(value) is None:
+            raise RuntimeError(
+                f'{path}: topics.{key}: '
+                'expected an absolute ROS topic name'
+            )
+
+    # 입력/출력 토픽이 실수로 같은 이름이 되는 경우 차단
+    if (
+        len({topics[key] for key in REQUIRED_TOPICS})
+        != len(REQUIRED_TOPICS)
+    ):
+        raise RuntimeError(
+            f'{path}: required input/output topics must be distinct'
+        )
+
+    # 프레임 이름 확인
+    frames = wiring['frames']
+
+    for key in REQUIRED_FRAMES:
+        value = _text(
+            frames.get(key),
+            f'{path}: frames.{key}',
+        )
+
+        if (
+            value.startswith('/')
+            or value.endswith('/')
+            or '//' in value
+        ):
+            raise RuntimeError(
+                f'{path}: frames.{key}: '
+                f'invalid frame name {value!r}'
+            )
+
+    if (
+        len({frames[key] for key in REQUIRED_FRAMES})
+        != len(REQUIRED_FRAMES)
+    ):
+        raise RuntimeError(
+            f'{path}: map/odom/base/sensor frames must be distinct'
+        )
+
+    # 예비 센서 TF 설정 확인
+    sensor_tf = wiring['sensor_tf']
+
+    sensor_tf['publish'] = _boolean(
+        sensor_tf.get('publish', False),
+        f'{path}: sensor_tf.publish',
+    )
+
+    for sensor in ('laser', 'imu'):
+        mount = _mapping(
+            sensor_tf.get(sensor),
+            f'{path}: sensor_tf.{sensor}',
+        )
+
+        for field in MOUNT_FIELDS:
+            mount[field] = _number(
+                mount.get(field),
+                f'{path}: sensor_tf.{sensor}.{field}',
+            )
+
+    # launch 기본값 확인
+    defaults = wiring['defaults']
+
+    for key, fallback in (
+        ('use_sim_time', False),
+        ('autostart', True),
+        ('set_initial_pose', False),
+    ):
+        defaults[key] = _boolean(
+            defaults.get(key, fallback),
+            f'{path}: defaults.{key}',
+        )
+
+    defaults['bond_timeout'] = _number(
+        defaults.get('bond_timeout', 10.0),
+        f'{path}: defaults.bond_timeout',
+        minimum=0.0,
+    )
+
+    # AMCL 초기 위치 기본값
+    pose = _mapping(
+        defaults.get('initial_pose', {}),
+        f'{path}: defaults.initial_pose',
+    )
+
+    for field in POSE_FIELDS:
+        pose[field] = _number(
+            pose.get(field, 0.0),
+            f'{path}: defaults.initial_pose.{field}',
+        )
+
+    defaults['initial_pose'] = pose
+
     return wiring
 
 
 def _bool_str(value) -> str:
-    """launch arguments are strings: True -> 'true'."""
-    return str(bool(value)).lower()
+    # 문자열 'false'가 bool 변환에서 True가 되는 문제를 막는다.
+    return (
+        'true'
+        if _boolean(value, 'boolean launch default')
+        else 'false'
+    )
 
 
-def declare_common_arguments(wiring: Dict) -> List[DeclareLaunchArgument]:
-    """Arguments shared by all three launch files. Defaults come from the wiring file."""
+def declare_common_arguments(
+    wiring: Dict,
+) -> List[DeclareLaunchArgument]:
+    """mapping/localization이 선언하고 navigation도 include로 공유한다."""
+
     topics = wiring['topics']
     defaults = wiring['defaults']
-    return [
+
+    arguments = [
         DeclareLaunchArgument(
-            'use_sim_time', default_value=_bool_str(defaults.get('use_sim_time', False)),
-            description='Use /clock (simulation) instead of wall time'),
+            'use_sim_time',
+            default_value=_bool_str(defaults['use_sim_time']),
+            description='Use the simulation /clock',
+        ),
         DeclareLaunchArgument(
-            'autostart', default_value=_bool_str(defaults.get('autostart', True)),
-            description='Lifecycle managers bring the managed nodes to ACTIVE automatically'),
-        DeclareLaunchArgument('scan_topic', default_value=topics['scan'],
-                              description='sensor_msgs/LaserScan topic'),
-        DeclareLaunchArgument('wheel_odom_topic', default_value=topics['wheel_odom'],
-                              description='Raw wheel odometry topic (nav_msgs/Odometry, no TF)'),
-        DeclareLaunchArgument('imu_topic', default_value=topics['imu'],
-                              description='sensor_msgs/Imu topic'),
-        DeclareLaunchArgument('odom_topic', default_value=topics['odom'],
-                              description='EKF output topic (nav_msgs/Odometry)'),
-        DeclareLaunchArgument('map_topic', default_value=topics['map'],
-                              description='nav_msgs/OccupancyGrid topic'),
+            'autostart',
+            default_value=_bool_str(defaults['autostart']),
+            description='Automatically activate managed lifecycle nodes',
+        ),
         DeclareLaunchArgument(
-            'publish_sensor_tf', default_value=_bool_str(wiring['sensor_tf'].get('publish', True)),
-            description='Publish static base_link->laser_link / imu_link transforms from localization.yaml. '
-                        'Set false once robot_bringup publishes a URDF.'),
+            'publish_sensor_tf',
+            default_value=_bool_str(wiring['sensor_tf']['publish']),
+            description=(
+                'Publish fallback sensor TF; '
+                'use false with robot_state_publisher'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'bond_timeout',
+            default_value=str(defaults['bond_timeout']),
+            description=(
+                'Lifecycle bond timeout in seconds; '
+                '0.0 disables bond monitoring'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'set_initial_pose',
+            default_value=_bool_str(defaults['set_initial_pose']),
+            description=(
+                'Use the configured AMCL initial pose '
+                '(requires localization launch wiring)'
+            ),
+        ),
     ]
+
+    for argument, key in (
+        ('scan_topic', 'scan'),
+        ('wheel_odom_topic', 'wheel_odom'),
+        ('imu_topic', 'imu'),
+        ('odom_topic', 'odom'),
+        ('map_topic', 'map'),
+    ):
+        arguments.append(
+            DeclareLaunchArgument(
+                argument,
+                default_value=topics[key],
+                description=f'ROS topic: {key}',
+            )
+        )
+
+    for field in POSE_FIELDS:
+        arguments.append(
+            DeclareLaunchArgument(
+                f'initial_pose_{field}',
+                default_value=str(defaults['initial_pose'][field]),
+                description=(
+                    f'AMCL initial {field} in map frame '
+                    '(metres; yaw in radians)'
+                ),
+            )
+        )
+
+    return arguments
 
 
 def sensor_remappings() -> List:
-    """Connect the relative names used in the YAML files to the configured topics.
-
-    The /tf remaps are the Nav2 convention that keeps the stack namespace-ready; in the root
-    namespace they are a no-op.
-    """
     return [
         ('/tf', 'tf'),
         ('/tf_static', 'tf_static'),
@@ -107,65 +337,139 @@ def sensor_remappings() -> List:
 
 
 def ekf_node(use_sim_time) -> Node:
-    """robot_localization EKF: wheel odometry + IMU -> /odom and the odom->base_link TF."""
+    """바퀴 오도메트리와 IMU를 융합하고 odom -> base_link를 발행한다."""
+
     return Node(
         package='robot_localization',
         executable='ekf_node',
-        name='ekf_filter_node',      # must match the top-level key in ekf.yaml
+        name='ekf_filter_node',
         output='screen',
-        parameters=[config_path('ekf.yaml'), {'use_sim_time': use_sim_time}],
+        parameters=[
+            config_path('ekf.yaml'),
+            {
+                'use_sim_time': ParameterValue(
+                    use_sim_time,
+                    value_type=bool,
+                ),
+            },
+        ],
         remappings=[
             ('/tf', 'tf'),
             ('/tf_static', 'tf_static'),
-            ('wheel/odom', LaunchConfiguration('wheel_odom_topic')),      # ekf.yaml odom0
-            ('imu/data', LaunchConfiguration('imu_topic')),               # ekf.yaml imu0
-            ('odometry/filtered', LaunchConfiguration('odom_topic')),     # ekf_node output -> /odom
+            (
+                'wheel/odom',
+                LaunchConfiguration('wheel_odom_topic'),
+            ),
+            (
+                'imu/data',
+                LaunchConfiguration('imu_topic'),
+            ),
+            (
+                'odometry/filtered',
+                LaunchConfiguration('odom_topic'),
+            ),
         ],
     )
 
 
 def static_sensor_tf_nodes(wiring: Dict) -> List[Node]:
-    """base_link -> laser_link and base_link -> imu_link from the sensor_tf section.
+    """publish_sensor_tf=true일 때만 사용하는 예비 센서 TF."""
 
-    Only started when the launch argument publish_sensor_tf is true. Uses the
-    tf2_ros --x/--y/... argument style (Humble and newer).
-    """
     frames = wiring['frames']
-    sensor_tf = wiring['sensor_tf']
-    nodes: List[Node] = []
-    for sensor_key, frame_key in (('laser', 'laser'), ('imu', 'imu')):
-        mount = sensor_tf[sensor_key]
-        nodes.append(Node(
-            package='tf2_ros',
-            executable='static_transform_publisher',
-            name=f'static_tf_base_to_{sensor_key}',
-            output='screen',
-            arguments=[
-                '--x', str(float(mount.get('x', 0.0))),
-                '--y', str(float(mount.get('y', 0.0))),
-                '--z', str(float(mount.get('z', 0.0))),
-                '--roll', str(float(mount.get('roll', 0.0))),
-                '--pitch', str(float(mount.get('pitch', 0.0))),
-                '--yaw', str(float(mount.get('yaw', 0.0))),
-                '--frame-id', str(frames['base_link']),
-                '--child-frame-id', str(frames[frame_key]),
-            ],
-            condition=IfCondition(LaunchConfiguration('publish_sensor_tf')),
-        ))
+    nodes = []
+
+    for sensor in ('laser', 'imu'):
+        mount = wiring['sensor_tf'][sensor]
+        arguments = []
+
+        for field in MOUNT_FIELDS:
+            arguments.extend([
+                f'--{field}',
+                str(mount[field]),
+            ])
+
+        arguments.extend([
+            '--frame-id',
+            frames['base_link'],
+            '--child-frame-id',
+            frames[sensor],
+        ])
+
+        nodes.append(
+            Node(
+                package='tf2_ros',
+                executable='static_transform_publisher',
+                name=f'static_tf_base_to_{sensor}',
+                output='screen',
+                arguments=arguments,
+                parameters=[
+                    {
+                        'use_sim_time': ParameterValue(
+                            LaunchConfiguration('use_sim_time'),
+                            value_type=bool,
+                        ),
+                    },
+                ],
+                remappings=[
+                    ('/tf', 'tf'),
+                    ('/tf_static', 'tf_static'),
+                ],
+                condition=IfCondition(
+                    LaunchConfiguration('publish_sensor_tf')
+                ),
+            )
+        )
+
     return nodes
 
 
-def lifecycle_manager(name: str, node_names: List[str], use_sim_time, autostart) -> Node:
-    """nav2_lifecycle_manager that configures/activates the given lifecycle nodes."""
+def amcl_initial_pose_parameters() -> Dict:
+    """13번 localization.launch.py가 AMCL parameters에 추가할 때 적용된다."""
+
+    parameters = {
+        'set_initial_pose': ParameterValue(
+            LaunchConfiguration('set_initial_pose'),
+            value_type=bool,
+        ),
+    }
+
+    for field in POSE_FIELDS:
+        parameters[f'initial_pose.{field}'] = ParameterValue(
+            LaunchConfiguration(f'initial_pose_{field}'),
+            value_type=float,
+        )
+
+    return parameters
+
+
+def lifecycle_manager(
+    name: str,
+    node_names: List[str],
+    use_sim_time,
+    autostart,
+) -> Node:
+    """기존 호출 형식을 유지하며 bond_timeout을 노드에 연결한다."""
+
     return Node(
         package='nav2_lifecycle_manager',
         executable='lifecycle_manager',
         name=name,
         output='screen',
-        parameters=[{
-            'use_sim_time': use_sim_time,
-            'autostart': autostart,
-            'node_names': node_names,
-            # bond_timeout (default 4.0 s): raise to ~10.0 if the Pi logs "bond ... timed out" under load.
-        }],
+        parameters=[
+            {
+                'use_sim_time': ParameterValue(
+                    use_sim_time,
+                    value_type=bool,
+                ),
+                'autostart': ParameterValue(
+                    autostart,
+                    value_type=bool,
+                ),
+                'node_names': list(node_names),
+                'bond_timeout': ParameterValue(
+                    LaunchConfiguration('bond_timeout'),
+                    value_type=float,
+                ),
+            },
+        ],
     )

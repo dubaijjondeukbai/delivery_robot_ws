@@ -26,3 +26,8 @@ src/robot_navigation/maps/*.posegraph
 .idea/
 *.swp
 .DS_Store
+
+# Additional colcon build directories
+build_*/
+install_*/
+log_*/
