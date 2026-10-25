@@ -53,6 +53,12 @@ safety_manager_node:
     # 모터 제어 측은 이 토픽을 입력으로 사용해야 한다.
     cmd_vel_safe_topic: /cmd_vel_safe
 
+    # 상태 토픽 (std_msgs/String): READY 또는 STOP:<사유>.
+    # 로봇이 안 움직일 때 `ros2 topic echo /safety/state` 로 사유를 본다.
+    # 시뮬레이션에서 STOP:waiting_for_estop_state 면 robot_sim 의
+    # sim_estop_publisher 가 안 떠 있는 것이다 (robot.launch.py sim_estop).
+    state_topic: /safety/state
+
 
 lidar_obstacle_node:
   ros__parameters:

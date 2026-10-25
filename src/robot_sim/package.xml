@@ -3,7 +3,7 @@
 <package format="3">
   <name>robot_sim</name>
   <version>0.1.0</version>
-  <description>Gazebo (gz-sim) simulation of the delivery robot: exhibition world, robot spawn from robot_description and the ros_gz_bridge that exposes /scan, /imu/data, /camera/*, /wheel/odom and the drive command. Launch + config only; no algorithms.</description>
+  <description>Gazebo (gz-sim) simulation of the delivery robot: exhibition world, robot spawn from robot_description and the ros_gz_bridge that exposes /scan, /imu/data, /camera/*, /wheel/odom and the drive command. Launch + config + a simulation-only E-stop heartbeat node (sim_estop_publisher); no algorithms.</description>
   <maintainer email="developer@todo.todo">developer</maintainer>
   <license>Apache-2.0</license>
 
@@ -11,6 +11,10 @@
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>ros2launch</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
+
+  <!-- sim_estop_publisher: simulation-only /estop_state heartbeat for robot_safety -->
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
 
   <!-- Gazebo <-> ROS 2 (rosdep: ros-<distro>-ros-gz-sim / ros-gz-bridge install the matching Gazebo) -->
   <exec_depend>ros_gz_sim</exec_depend>

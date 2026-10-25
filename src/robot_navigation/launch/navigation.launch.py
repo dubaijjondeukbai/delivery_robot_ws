@@ -29,16 +29,21 @@ SAFETY
 Launch arguments (defaults from config/localization.yaml unless noted):
     map, motion_enabled (false), cmd_vel_out_topic, cmd_vel_dry_run_topic,
     nav2_params_file, amcl_params_file, scan_topic, wheel_odom_topic, imu_topic,
-    odom_topic, map_topic, publish_sensor_tf, use_sim_time, autostart
+    odom_topic, map_topic, publish_sensor_tf, use_sim_time, autostart,
+    nav_to_pose_bt_xml (default: behavior_trees/nav_to_pose_replan_on_invalid_path.xml of this
+                        package = Nav2 default tree + replanning on INVALID_PATH(103) + no BackUp
+                        while robot_safety blocks reversing; '' = Nav2 built-in default tree)
 """
 
 import os
 
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 from robot_navigation.launch_common import (
     config_path,
@@ -74,8 +79,24 @@ def generate_launch_description() -> LaunchDescription:
         "'.strip().lower() in ('true', '1') else '", LaunchConfiguration('cmd_vel_dry_run_topic'), "'",
     ])
 
+    # Behavior tree for NavigateToPose. Our copy of the Nav2 default tree replans from the current
+    # pose when FollowPath fails with INVALID_PATH(103) ("Resulting plan has 0 poses in it.", e.g.
+    # after an AMCL pose jump) instead of failing the whole goal, and drops BackUp from the recovery
+    # round-robin while robot_safety blocks reversing. An empty argument selects the Nav2 built-in tree
+    # (bt_navigator does not fall back by itself: an empty path fails to load).
+    custom_bt_xml = os.path.join(package_share(), 'behavior_trees', 'nav_to_pose_replan_on_invalid_path.xml')
+    nav2_default_bt_xml = os.path.join(
+        get_package_share_directory('nav2_bt_navigator'), 'behavior_trees',
+        'navigate_to_pose_w_replanning_and_recovery.xml')
+    nav_to_pose_bt_xml = PythonExpression([
+        "'", LaunchConfiguration('nav_to_pose_bt_xml'), "' or '", nav2_default_bt_xml, "'",
+    ])
+
     arguments = [
         # map / topic / use_sim_time / autostart arguments are declared by the included localization launch.
+        DeclareLaunchArgument(
+            'nav_to_pose_bt_xml', default_value=custom_bt_xml,
+            description='bt_navigator default_nav_to_pose_bt_xml; empty = Nav2 built-in default tree'),
         DeclareLaunchArgument(
             'motion_enabled', default_value='false',
             description='true routes Nav2 velocity to cmd_vel_out_topic (robot_safety). '
@@ -118,7 +139,10 @@ def generate_launch_description() -> LaunchDescription:
     )
     bt_navigator = Node(
         package='nav2_bt_navigator', executable='bt_navigator', name='bt_navigator', output='screen',
-        parameters=[nav2_params_file, {'use_sim_time': use_sim_time}],
+        parameters=[nav2_params_file, {
+            'use_sim_time': use_sim_time,
+            'default_nav_to_pose_bt_xml': ParameterValue(nav_to_pose_bt_xml, value_type=str),
+        }],
         remappings=sensor_remappings(),
     )
     velocity_smoother = Node(
@@ -134,6 +158,7 @@ def generate_launch_description() -> LaunchDescription:
         '[robot_navigation] motion_enabled=', motion_enabled,
         ' -> Nav2 velocity is published on ', nav2_cmd_vel_out,
         ' (robot_safety listens on ', LaunchConfiguration('cmd_vel_out_topic'), ')',
+        ' | nav_to_pose BT: ', nav_to_pose_bt_xml,
     ])
 
     return LaunchDescription(

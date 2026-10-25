@@ -3,12 +3,23 @@
 설정 순서: 패키지 YAML -> robot.yaml -> 명시적 launch 설정.
 안전 노드 두 개는 항상 실행한다.
 센서 드라이버/STM32 bridge/실물 E-stop 입력 발행자는 별도로 필요하다.
+
+sim:=true 일 때:
+  * sim_estop (기본 = sim): robot_sim 의 sim_estop_publisher 가 /estop_state=false 를
+    대신 발행한다. sim:=false 에서 sim_estop:=true 는 거부한다(실물에서 가짜 E-stop 금지).
+  * sim_amcl_init (기본 = sim): AMCL 초기 위치를 Gazebo 스폰 위치(sim_x/sim_y/sim_yaw)로
+    자동 설정한다. 지도를 기본 스폰 위치에서 만들었다는 가정이며, 아니면
+    sim_amcl_init:=false 로 끄고 RViz 2D Pose Estimate 를 쓴다.
+  * rviz:=true: use_sim_time 을 맞춘 RViz(nav2 기본 view)를 함께 띄운다.
 """
 
 import math
 import os
 
-from ament_index_python.packages import get_package_share_directory
+from ament_index_python.packages import (
+    PackageNotFoundError,
+    get_package_share_directory,
+)
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
@@ -68,6 +79,9 @@ def _build_system(context, wiring):
     use_sim_time = _boolean(context, 'use_sim_time')
     motion = _boolean(context, 'motion_enabled')
     second_camera = _boolean(context, 'enable_camera_2')
+    sim_estop = _boolean(context, 'sim_estop')
+    sim_amcl_init = _boolean(context, 'sim_amcl_init')
+    rviz = _boolean(context, 'rviz')
 
     if sim and not use_sim_time:
         raise RuntimeError(
@@ -77,6 +91,17 @@ def _build_system(context, wiring):
     if sim and second_camera:
         raise RuntimeError(
             'The current Gazebo model provides only one camera'
+        )
+
+    # 가짜 E-stop 발행자는 시뮬레이션 밖에서 절대 실행하지 않는다.
+    if sim_estop and not sim:
+        raise RuntimeError(
+            'sim_estop=true is allowed only with sim=true'
+        )
+
+    if sim_amcl_init and not sim:
+        raise RuntimeError(
+            'sim_amcl_init applies only to sim=true'
         )
 
     if _boolean(context, 'publish_sensor_tf'):
@@ -214,7 +239,10 @@ def _build_system(context, wiring):
                 f'sim={sim} '
                 f'use_sim_time={use_sim_time} '
                 f'motion_enabled={motion} '
-                f'camera_2={second_camera}'
+                f'camera_2={second_camera} '
+                f'sim_estop={sim_estop} '
+                f'sim_amcl_init={sim_amcl_init} '
+                f'rviz={rviz}'
             )
         ),
     ] + handlers + [
@@ -240,6 +268,7 @@ def _build_system(context, wiring):
             'gui': LaunchConfiguration('gui'),
             'world': LaunchConfiguration('world'),
             'spawn_delay_sec': LaunchConfiguration('spawn_delay_sec'),
+            'publish_estop': str(sim_estop).lower(),
         }
 
         for axis in ('x', 'y', 'z', 'yaw'):
@@ -338,6 +367,28 @@ def _build_system(context, wiring):
                 ),
             })
 
+        if sim and sim_amcl_init and mode in ('localization', 'navigation'):
+            # Gazebo 스폰 위치 = map 좌표라는 가정(지도를 기본 스폰 위치에서 만든 경우).
+            # 2D Pose Estimate 를 누를 필요가 없고, 목표 실행 중 위치 재설정도 필요 없다.
+            navigation_arguments.update({
+                'set_initial_pose': 'true',
+                'initial_pose_x': LaunchConfiguration('sim_x'),
+                'initial_pose_y': LaunchConfiguration('sim_y'),
+                'initial_pose_z': '0.0',
+                'initial_pose_yaw': LaunchConfiguration('sim_yaw'),
+            })
+
+            actions.append(
+                LogInfo(
+                    msg=(
+                        '[Master] sim_amcl_init: AMCL initial pose = Gazebo '
+                        'spawn pose (assumes the map was recorded from the '
+                        'default spawn pose; otherwise use '
+                        'sim_amcl_init:=false and RViz 2D Pose Estimate)'
+                    )
+                )
+            )
+
         if mode == 'navigation':
             navigation_arguments.update({
                 'motion_enabled': str(motion).lower(),
@@ -355,6 +406,31 @@ def _build_system(context, wiring):
                 'robot_navigation',
                 f'{mode}.launch.py',
                 navigation_arguments,
+            )
+        )
+
+    if rviz:
+        # RViz 도 use_sim_time 을 맞춰야 /initialpose stamp 와 TF 시각이 어긋나지 않는다.
+        rviz_arguments = []
+
+        try:
+            rviz_config = _share(
+                'nav2_bringup', 'rviz', 'nav2_default_view.rviz'
+            )
+        except PackageNotFoundError:
+            rviz_config = ''
+
+        if rviz_config and os.path.isfile(rviz_config):
+            rviz_arguments = ['-d', rviz_config]
+
+        actions.append(
+            Node(
+                package='rviz2',
+                executable='rviz2',
+                name='rviz2',
+                output='screen',
+                arguments=rviz_arguments,
+                parameters=[clock_parameters],
             )
         )
 
@@ -432,6 +508,28 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'spawn_delay_sec',
             default_value='4.0',
+        ),
+        DeclareLaunchArgument(
+            'sim_estop',
+            default_value=LaunchConfiguration('sim'),
+            description=(
+                'SIMULATION ONLY: robot_sim publishes /estop_state=false '
+                'so robot_safety can leave STOP; defaults to sim, '
+                'rejected when sim=false'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'sim_amcl_init',
+            default_value=LaunchConfiguration('sim'),
+            description=(
+                'Set the AMCL initial pose to the Gazebo spawn pose '
+                '(sim_x/sim_y/sim_yaw); defaults to sim'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'rviz',
+            default_value='false',
+            description='Start RViz (nav2 default view) with use_sim_time',
         ),
     ]
 

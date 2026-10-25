@@ -35,7 +35,8 @@ setup(
     license='Apache-2.0',
     entry_points={
         'console_scripts': [
-            # robot_sim has no nodes (world + launch + bridge config only)
+            # simulation-only /estop_state heartbeat for robot_safety (no MCU in Gazebo)
+            'sim_estop_publisher = robot_sim.sim_estop_publisher:main',
         ],
     },
 )

@@ -15,6 +15,7 @@ Started here:
     2. gz sim with worlds/<world>                   (ros_gz_sim gz_sim.launch.py)
     3. spawn of the robot from /robot_description    (ros_gz_sim create)
     4. ros_gz_bridge parameter_bridge               (config/bridge.yaml)
+    5. sim_estop_publisher                          (/estop_state=false heartbeat, publish_estop:=false to disable)
    (the spawn waits spawn_delay_sec, default 4 s, for the Gazebo server)
 
 Normally this file is included by robot_bringup/robot.launch.py with sim:=true, which also
@@ -23,6 +24,10 @@ starts vision / follower / navigation with use_sim_time:=true and publish_sensor
 Safety: the simulated base listens to cmd_vel_topic (default /cmd_vel_safe = the robot_bridge input
 on the real robot), so robot_safety keeps authority in simulation too. Use cmd_vel_topic:=/cmd_vel_auto
 only for tests without robot_safety running.
+robot_safety also needs the periodic /estop_state (std_msgs/Bool) heartbeat that the MCU bridge
+provides on the real robot. Nothing provides it in Gazebo, so robot_safety would stay in
+STOP ('waiting_for_estop_state') forever: sim_estop_publisher publishes data=false instead.
+SIMULATION ONLY - never run it on the real robot.
 """
 
 import os
@@ -61,6 +66,9 @@ def generate_launch_description():
                               description='Start robot_state_publisher here (false when robot_bringup already did)'),
         DeclareLaunchArgument('spawn_delay_sec', default_value='4.0',
                               description='Wait before spawning so the Gazebo server is up (WSL2 software rendering starts slowly)'),
+        DeclareLaunchArgument('publish_estop', default_value='true',
+                              description='SIMULATION ONLY: publish /estop_state=false at 10 Hz so robot_safety can leave '
+                                          'STOP (no MCU in Gazebo). false = you publish /estop_state yourself'),
         DeclareLaunchArgument('x', default_value='0.0'),
         DeclareLaunchArgument('y', default_value='0.0'),
         DeclareLaunchArgument('z', default_value='0.10'),
@@ -128,6 +136,26 @@ def generate_launch_description():
         remappings=[('/model/delivery_robot/cmd_vel', cmd_vel_topic)],
     )
 
+    # --------------------------------------------------
+    # 5. SIMULATION-ONLY /estop_state heartbeat. robot_safety stays in STOP
+    #    ('waiting_for_estop_state') until Bool(false) arrives periodically; the MCU
+    #    bridge does that on the real robot, this node does it in Gazebo.
+    #    Test E-stop at runtime:  ros2 param set /sim_estop_publisher estop_active true
+    # --------------------------------------------------
+    sim_estop = Node(
+        package='robot_sim',
+        executable='sim_estop_publisher',
+        name='sim_estop_publisher',
+        output='screen',
+        parameters=[{
+            'use_sim_time': True,
+            'topic': '/estop_state',
+            'rate_hz': 10.0,
+            'estop_active': False,
+        }],
+        condition=IfCondition(LaunchConfiguration('publish_estop')),
+    )
+
     ld = LaunchDescription()
     for argument in arguments:
         ld.add_action(argument)
@@ -136,4 +164,5 @@ def generate_launch_description():
     ld.add_action(gazebo)
     ld.add_action(TimerAction(period=LaunchConfiguration('spawn_delay_sec'), actions=[spawn]))
     ld.add_action(bridge)
+    ld.add_action(sim_estop)
     return ld

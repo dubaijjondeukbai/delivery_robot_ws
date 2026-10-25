@@ -79,3 +79,16 @@ ros2 run rviz2 rviz2 -d $(ros2 pkg prefix nav2_bringup)/share/nav2_bringup/rviz/
 * 센서 노이즈·마찰·플러그인: `robot_description/urdf/gazebo.xacro`
 * 월드 배치: `worlds/exhibition.sdf` (실제 전시장 도면이 나오면 교체)
 * 토픽 이름: `config/bridge.yaml` (`robot_navigation/config/localization.yaml` 과 맞출 것)
+
+## E-stop 하트비트 (시뮬레이션 전용, 2026-10-25)
+
+robot_safety 는 `/estop_state`(std_msgs/Bool) 를 1 s 안에 주기적으로 받지 못하면 `STOP:waiting_for_estop_state`
+에 머문다(빨간 경로는 그려지는데 로봇은 정지). 실물에서는 MCU bridge 가 발행하지만 Gazebo 에는 발행자가 없으므로
+`sim.launch.py` 가 `sim_estop_publisher` 노드(`/estop_state`=false, 10 Hz)를 함께 띄운다(`publish_estop:=false` 로 끔).
+master launch 에서는 `sim_estop`(기본 = sim) 이며 `sim:=false` 에서는 거부된다 — 실물에서 가짜 E-stop 을 띄우지 않기 위해서다.
+
+```bash
+ros2 topic echo /safety/state                              # READY 또는 STOP:<사유>
+ros2 param set /sim_estop_publisher estop_active true      # 시뮬에서 E-stop 동작 시험
+ros2 param set /sim_estop_publisher estop_active false
+```

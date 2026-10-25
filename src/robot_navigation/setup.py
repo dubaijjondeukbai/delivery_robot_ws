@@ -22,6 +22,9 @@ setup(
         # config files -> install/robot_navigation/share/robot_navigation/config/
         (os.path.join('share', package_name, 'config'),
             glob(os.path.join('config', '*.yaml'))),
+        # behavior trees -> install/robot_navigation/share/robot_navigation/behavior_trees/
+        (os.path.join('share', package_name, 'behavior_trees'),
+            glob(os.path.join('behavior_trees', '*.xml'))),
         # maps (README, map.yaml, map.pgm, *.posegraph, *.data) -> install/robot_navigation/share/robot_navigation/maps/
         (os.path.join('share', package_name, 'maps'),
             [f for f in glob(os.path.join('maps', '*')) if os.path.isfile(f)]),

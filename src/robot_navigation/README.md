@@ -242,3 +242,25 @@ ros2 run rviz2 rviz2 -d $(ros2 pkg prefix nav2_bringup)/share/nav2_bringup/rviz/
 * Pi 5 에서 lifecycle 로그에 "bond ... timed out" 이 보이면 `launch_common.lifecycle_manager` 의 `bond_timeout` 을 10.0 으로 올린다.
 * slam_toolbox 는 nav2 lifecycle manager 로 올리면 `bad_weak_ptr` 로 activate 가 실패하는 릴리스가 있어(Lyrical 에서 확인) mapping.launch.py 가 configure/activate 이벤트를 직접 보낸다(`use_lifecycle_manager: false`).
 * `robot_vision` 과는 의존성이 없다. QR 결과를 목적지로 쓰는 것은 상위(task_manager)에서 `/goal_pose` 또는 NavigateToPose 액션으로 변환하면 된다. AprilTag 는 station docking 전용으로 남긴다.
+
+## 9. 2026-10-25 변경: INVALID_PATH(103) 재계획 BT, 로컬 코스트맵 6 m, 시뮬 초기 위치
+
+* `controller_server: Resulting plan has 0 poses in it.` → `bt_navigator: Goal failed error_code:103` 은 플래너 실패가
+  아니라 컨트롤러 서버의 경로 처리기(`nav2_controller::FeasiblePathHandler`)가 **가장 가까운 경로점이 로컬 코스트맵 창 밖**이라
+  빈 경로를 만든 것이다. 목표 실행 중 AMCL 위치가 창 반폭(3 m 창이면 1.5 m) 이상 튀면(2D Pose Estimate, 재수렴) 생긴다.
+  Nav2 기본 BT 는 103 을 복구 불가로 보고 즉시 목표를 실패시킨다.
+* `behavior_trees/nav_to_pose_replan_on_invalid_path.xml`: Nav2 기본 트리 + FollowPath 가 103 등으로 실패하면 현재 위치에서
+  재계획 후 재시도 + BackUp 제거(robot_safety 가 후진을 차단하는 동안). `navigation.launch.py` 의 `nav_to_pose_bt_xml`
+  로 바꾸며 `nav_to_pose_bt_xml:=''` 면 Nav2 기본 트리.
+* `nav2.yaml` 로컬 코스트맵 3 m → 6 m (허용 점프 1.5 m → 3 m).
+* `robot_bringup` `sim_amcl_init`(기본 = sim): AMCL 초기 위치를 Gazebo 스폰 위치로 자동 설정. 지도를 기본 스폰 위치에서
+  만든 경우에만 맞다. 아니면 `sim_amcl_init:=false` + RViz 2D Pose Estimate.
+* 운용 규칙: **목표 실행 중에는 2D Pose Estimate 를 누르지 않는다.** 위치를 다시 잡아야 하면 목표를 취소하고, 재설정 후
+  `/scan` 이 지도의 벽과 겹치는지 확인한 다음 새 목표를 보낸다. 자동 발행 의심 시 `ros2 topic info -v /initialpose`.
+
+```bash
+# 시뮬 + 네비 + RViz 한 번에 (E-stop 하트비트·AMCL 초기 위치 자동)
+ros2 launch robot_bringup robot.launch.py sim:=true nav_mode:=navigation motion_enabled:=true rviz:=true
+ros2 topic echo /safety/state          # READY 가 아니면 사유가 보인다
+ros2 param get /bt_navigator default_nav_to_pose_bt_xml
+```

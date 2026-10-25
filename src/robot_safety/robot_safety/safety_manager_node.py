@@ -11,6 +11,7 @@
 출력
 ----
 /cmd_vel_safe              geometry_msgs/msg/Twist
+/safety/state              std_msgs/msg/String   READY 또는 STOP:<사유>
 
 안전 원칙
 ---------
@@ -44,11 +45,22 @@ from rclpy.qos import (
     QoSProfile,
     ReliabilityPolicy,
 )
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 
 
 class SafetyManagerNode(Node):
     """안전 상태와 명령 유효성을 확인한 뒤 속도를 출력한다."""
+
+    # _check_safety 가 돌려주는 차단 사유. 명령이 없어서 서 있는
+    # 정상 대기(waiting_for_new_command 등)와 달리 주기적으로 다시 알린다.
+    SAFETY_BLOCK_REASONS = frozenset((
+        'waiting_for_estop_state',
+        'estop_state_timeout',
+        'estop_active',
+        'waiting_for_obstacle_state',
+        'obstacle_state_timeout',
+        'obstacle_detected',
+    ))
 
     def __init__(self):
         super().__init__('safety_manager_node')
@@ -69,6 +81,7 @@ class SafetyManagerNode(Node):
             'cmd_vel_safe_topic': '/cmd_vel_safe',
             'estop_topic': '/estop_state',
             'obstacle_topic': '/safety/obstacle_detected',
+            'state_topic': '/safety/state',
         }
 
         for name, value in defaults.items():
@@ -104,6 +117,7 @@ class SafetyManagerNode(Node):
         safe_topic = self._topic_parameter('cmd_vel_safe_topic')
         estop_topic = self._topic_parameter('estop_topic')
         obstacle_topic = self._topic_parameter('obstacle_topic')
+        state_topic = self._topic_parameter('state_topic')
 
         # 입력과 출력이 같은 토픽으로 연결되는 피드백을 방지한다.
         if self.resolve_topic_name(cmd_topic) == (
@@ -169,6 +183,15 @@ class SafetyManagerNode(Node):
         self.safe_cmd_pub = self.create_publisher(
             Twist,
             safe_topic,
+            output_qos,
+        )
+
+        # 현재 통과/차단 상태와 사유.
+        # 로그는 상태가 바뀔 때만 남으므로, "왜 안 움직이는지"를
+        # ros2 topic echo 로 언제든 볼 수 있게 매 출력마다 발행한다.
+        self.state_pub = self.create_publisher(
+            String,
+            state_topic,
             output_qos,
         )
 
@@ -413,6 +436,14 @@ class SafetyManagerNode(Node):
 
         self.safe_cmd_pub.publish(safe_cmd)
 
+        state = String()
+        state.data = (
+            'READY'
+            if reason == 'command_valid'
+            else f'STOP:{reason}'
+        )
+        self.state_pub.publish(state)
+
         # 같은 상태를 매 주기 출력하지 않고 상태 변경만 기록한다.
         if reason != self._last_output_reason:
             if reason == 'command_valid':
@@ -425,6 +456,16 @@ class SafetyManagerNode(Node):
                 )
 
             self._last_output_reason = reason
+
+        elif reason in self.SAFETY_BLOCK_REASONS:
+            # 안전 입력 때문에 차단이 길어지면 5초마다 사유를 다시 알린다
+            # (시작 직후의 'waiting_for_estop_state' 한 줄은 다른 로그에 묻히기 쉽다).
+            self.get_logger().warning(
+                f'[Safety] STOP continues: {reason}',
+                throttle_duration_sec=5.0,
+                throttle_time_source_type=self._steady_clock,
+                skip_first=True,
+            )
 
     # ======================================================
     # 종료 처리
