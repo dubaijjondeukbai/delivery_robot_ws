@@ -80,12 +80,13 @@ sensor_tf:
   # rpy: 회전각, 단위 rad
 
   laser:
-    x: 0.0
+    # 2026-10-27 CAD: LiDAR 는 전방 끝 아치 위 (robot_params.xacro lidar_x/lidar_z 와 일치)
+    x: 0.261
     y: 0.0
 
     # 바닥 기준 스캔 높이 - 바퀴 축 높이
-    # 0.700 - 0.0857
-    z: 0.6143
+    # 0.783 - 0.0857
+    z: 0.6973
 
     roll: 0.0
     pitch: 0.0

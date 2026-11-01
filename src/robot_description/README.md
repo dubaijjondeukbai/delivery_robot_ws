@@ -42,3 +42,25 @@ xacro $(ros2 pkg prefix robot_description)/share/robot_description/urdf/robot.ur
 | `camera_*` | (0.26, 0, 0.45), 수평 | 적재함 앞면 중앙 |
 | `imu_*` | 섀시 중심 | |
 | `wheel_mu2` | 0.5 | 스키드 선회 마찰 (시뮬) |
+
+## 2026-10-27 치수 갱신 (CompleteDesign.zip)
+
+Fusion 전체 설계 OBJ(`Complete+Design.obj`, mm, Z-up)의 바운딩 박스로 `urdf/robot_params.xacro` 를 갱신했다.
+메시 축 → ROS 축은 메시 -Y = 전방(x), 메시 +X = 좌측(y). 전방 = 아치·LiDAR 쪽 끝(사용자 확인).
+
+| 항목 | 이전 | CAD |
+|---|---|---|
+| 축거 / 윤거 | 0.400 / 0.550 | 0.460 / 0.541 |
+| 바퀴 반지름 / 폭 | 0.0857 / 0.052 | 0.0857 / 0.0545 |
+| 하부 섀시 | 0.60 × 0.30 × 0.10 | 0.75 × 0.431 × 0.125 |
+| 적재함 | 0.502 × 0.570 × 0.380 (바닥 0.22) | 0.781 × 0.642 × 0.500 (바닥 0.15) + 측면 디스플레이 → 전체 폭 0.708 |
+| 아치 | 중앙 | 전방 끝 x 0.233, z 0.525~0.74 |
+| LiDAR 스캔면 | (0, 0, 0.700) | (0.261, 0, 0.783 추정) — 디테일 모델 기준 |
+| 카메라 | 1개 (0.26, 0, 0.45) | 전면 하단 범퍼의 까만 점 자리: 1개 중앙 (0.350, 0, 0.102) 기준, `front_camera_count=2` 면 양옆 (0.348, ±0.130, 0.102) + camera_2_link. 얼굴 '눈' 부품(z 0.40)은 카메라가 아님 |
+| 외곽 footprint | ±0.30 × ±0.30 | ±0.395 × ±0.354 (카메라 렌즈 끝 포함) |
+| 뚜껑(열림) | — | LiDAR 뒤 0.05 m, z 0.63~1.14, 후방 약 157° 가림 (정지 중에만 열림 전제) |
+
+추정값(실측 필요): LiDAR 스캔면 높이(외함 바닥 0.750 + 0.030), 카메라 pitch, IMU 위치, 질량/관성.
+같이 바꾼 파일: `robot_navigation/config/nav2.yaml`(footprint ±0.391 × ±0.354), `robot_navigation/config/localization.yaml`(예비 laser TF),
+`robot_safety/config/safety.yaml`(주석: LiDAR 원점이 전면에서 0.138 m 뒤).
+Gazebo 는 1번 카메라만 시뮬레이션한다(2번은 link/TF 만).

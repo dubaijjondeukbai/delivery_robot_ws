@@ -5,7 +5,7 @@
 # Dijkstra 전역 계획 + RPP 경로 추종
 #
 # 수치는 실물 검증 전 초기 시험값이다.
-# footprint는 현재 URDF 모델 기준이며 실측 확인이 필요하다.
+# footprint는 2026-10-27 CompleteDesign CAD 외곽(0.781 × 0.708) 기준이다.
 #
 # 최종 속도 출력 토픽은 launch에서 결정한다.
 # 현재 Safety Manager에 맞춰 geometry_msgs/Twist를 사용한다.
@@ -151,13 +151,14 @@ local_costmap:
       height: 6
       resolution: 0.05
 
-      # 현재 URDF 모델의 외곽
-      # x: 차체 반길이 0.300
-      # y: wheel_y + wheel_width/2 = 0.301
+      # 2026-10-27 CompleteDesign CAD 외곽 (robot_description/urdf/robot_params.xacro 와 일치)
+      # x: 전·후 카메라 렌즈 끝까지 반길이 0.395 (외함 자체는 약 0.39)
+      # y: 측면 디스플레이 베젤까지 반폭 0.354 (바퀴 바깥면 0.298 보다 넓음)
+      # 외접원 반지름 0.530 → inflation_radius(0.55) 보다 작아야 한다.
       #
       # robot_radius 대신 직사각형을 사용한다.
       # padding은 실물 시험 전 초기 여유값이다.
-      footprint: "[[0.300, 0.301], [-0.300, 0.301], [-0.300, -0.301], [0.300, -0.301]]"
+      footprint: "[[0.395, 0.354], [-0.395, 0.354], [-0.395, -0.354], [0.395, -0.354]]"
       footprint_padding: 0.02
 
       transform_tolerance: 0.3
@@ -209,7 +210,7 @@ global_costmap:
       track_unknown_space: true
 
       # local_costmap과 동일하게 유지한다.
-      footprint: "[[0.300, 0.301], [-0.300, 0.301], [-0.300, -0.301], [0.300, -0.301]]"
+      footprint: "[[0.395, 0.354], [-0.395, 0.354], [-0.395, -0.354], [0.395, -0.354]]"
       footprint_padding: 0.02
 
       transform_tolerance: 0.5

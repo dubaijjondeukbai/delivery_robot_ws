@@ -17,14 +17,17 @@
 
   차체 관성을 고정 자식 body_link로 분리하여
   KDL의 루트 링크 관성 제한에 대응한다.
-  기존 차체, 센서, 바퀴의 좌표와 치수는 유지한다.
+  치수는 robot_params.xacro(2026-10-27 CompleteDesign CAD 실측)를 따른다:
+  적재함이 로봇 전체를 덮고, 측면 디스플레이, 리프트 다리 4개, 전방 끝 아치 위 LiDAR,
+  전면 하단 범퍼의 카메라(기본 1개 중앙 = camera_link; front_camera_count=2 면
+  camera_link 좌측 + camera_2_link 우측).
 
   map / odom은 navigation이 담당한다.
   이 모델을 사용할 때 별도의 중복 센서 TF를 발행하지 않는다.
 
-  카메라: Raspberry Pi Camera Module 3 일반형.
-  2번 카메라의 위치/방향은 미확정이므로 TF와 형상을 생성하지 않는다.
-  robot_params.xacro의 2번 카메라 이름은 예약값이다.
+  카메라: Raspberry Pi Camera Module 3 (Wide). 현재 1개(전면 하단 범퍼 중앙) 기준.
+  2개 구성은 robot_params.xacro 의 front_camera_count 를 2 로 바꾸면 켜지며,
+  그때 2번 카메라는 link/TF 만 만들고 Gazebo 센서는 1번만 시뮬레이션한다.
 
   sim:=false: 모델/TF용 URDF.
   sim:=true: gazebo.xacro의 센서와 구동 플러그인 포함.
@@ -111,49 +114,56 @@
       <material name="body_white"/>
     </visual>
 
+    <!-- 충돌 형상은 측면 디스플레이까지 포함한 전체 폭(body_envelope_width)으로 둔다 -->
     <collision>
       <origin
         xyz="${cargo_x_offset} 0 ${cargo_bottom_z + cargo_height/2 - base_z}"
         rpy="0 0 0"/>
       <geometry>
-        <box size="${cargo_length} ${cargo_width} ${cargo_height}"/>
+        <box size="${cargo_length} ${body_envelope_width} ${cargo_height}"/>
       </geometry>
     </collision>
 
-    <!-- 상판: 기존 모델에서는 시각화만 제공 -->
-    <visual>
-      <origin xyz="0 0 ${top_plate_z - base_z}" rpy="0 0 0"/>
-      <geometry>
-        <box
-          size="${top_plate_length} ${top_plate_width} ${top_plate_thickness}"/>
-      </geometry>
-      <material name="frame_grey"/>
-    </visual>
-
-    <!-- 지지 기둥 4개: 기존 모델에서는 시각화만 제공 -->
-    <xacro:macro name="pillar_visual" params="x y">
+    <!-- 측면 디스플레이(베젤 포함) 좌/우: 시각화만 -->
+    <xacro:macro name="display_visual" params="side">
       <visual>
         <origin
-          xyz="${x} ${y} ${pillar_center_z - base_z}"
+          xyz="${display_x} ${side * (body_envelope_width/2 - display_thickness/2)} ${display_z - base_z}"
           rpy="0 0 0"/>
         <geometry>
-          <cylinder
-            radius="${pillar_radius}"
-            length="${pillar_length}"/>
+          <box
+            size="${display_length} ${display_thickness} ${display_height}"/>
+        </geometry>
+        <material name="sensor_dark"/>
+      </visual>
+    </xacro:macro>
+
+    <xacro:display_visual side="1"/>
+    <xacro:display_visual side="-1"/>
+
+    <!-- 리프트 다리 4개(적재함 아래): 시각화만, 충돌은 하부 섀시 상자가 담당 -->
+    <xacro:macro name="lift_leg_visual" params="x y">
+      <visual>
+        <origin
+          xyz="${x} ${y} ${lift_leg_center_z - base_z}"
+          rpy="0 0 0"/>
+        <geometry>
+          <box
+            size="${lift_leg_length} ${lift_leg_width} ${lift_leg_height}"/>
         </geometry>
         <material name="frame_grey"/>
       </visual>
     </xacro:macro>
 
-    <xacro:pillar_visual x="${pillar_x}" y="${pillar_y}"/>
-    <xacro:pillar_visual x="${pillar_x}" y="${-pillar_y}"/>
-    <xacro:pillar_visual x="${-pillar_x}" y="${pillar_y}"/>
-    <xacro:pillar_visual x="${-pillar_x}" y="${-pillar_y}"/>
+    <xacro:lift_leg_visual x="${lift_leg_x}" y="${lift_leg_y}"/>
+    <xacro:lift_leg_visual x="${lift_leg_x}" y="${-lift_leg_y}"/>
+    <xacro:lift_leg_visual x="${-lift_leg_x}" y="${lift_leg_y}"/>
+    <xacro:lift_leg_visual x="${-lift_leg_x}" y="${-lift_leg_y}"/>
 
-    <!-- 손잡이 아치 -->
+    <!-- 손잡이 아치: 전방 끝(arch_x), 외함 위로 솟은 고리를 상자로 근사 -->
     <visual>
       <origin
-        xyz="${lidar_x} ${lidar_y} ${arch_bar_z - base_z}"
+        xyz="${arch_x} 0 ${arch_bar_z - base_z}"
         rpy="0 0 0"/>
       <geometry>
         <box
@@ -164,7 +174,7 @@
 
     <collision>
       <origin
-        xyz="${lidar_x} ${lidar_y} ${arch_bar_z - base_z}"
+        xyz="${arch_x} 0 ${arch_bar_z - base_z}"
         rpy="0 0 0"/>
       <geometry>
         <box
@@ -172,7 +182,7 @@
       </geometry>
     </collision>
 
-    <!-- LiDAR 마운트 -->
+    <!-- LiDAR 마운트: 아치 위, LiDAR 외함 바닥까지 -->
     <visual>
       <origin
         xyz="${lidar_x} ${lidar_y} ${arch_bar_z + arch_bar_height/2 + lidar_mount_height/2 - base_z}"
@@ -301,8 +311,8 @@
   </joint>
 
   <!-- ====================================================
-       1번 카메라: Camera Module 3 일반형
-       기존 전방 위치를 사용하며 최종 2대 배치는 미확정
+       1번 카메라: Camera Module 3 (Wide)
+       front_camera_count=1 이면 전면 하단 범퍼 중앙, 2 이면 좌측(+y)
        ==================================================== -->
   <link name="${camera_frame}">
     <visual>
@@ -341,6 +351,50 @@
     <child link="${camera_optical_frame}"/>
     <origin xyz="0 0 0" rpy="${-pi/2} 0 ${-pi/2}"/>
   </joint>
+
+  <!-- ====================================================
+       2번 카메라: Camera Module 3 (Wide), 전면 우측(-y)
+       front_camera_count = 2 일 때만 생성. link/TF 만 제공하며
+       Gazebo 센서는 만들지 않는다. (현재 기준은 1개라 비활성)
+       ==================================================== -->
+  <xacro:if value="${front_camera_count == 2}">
+  <link name="${camera_2_frame}">
+    <visual>
+      <origin
+        xyz="${-camera_board_depth/2} 0 0"
+        rpy="0 0 0"/>
+      <geometry>
+        <box
+          size="${camera_board_depth} ${camera_board_width} ${camera_board_height}"/>
+      </geometry>
+      <material name="sensor_dark"/>
+    </visual>
+
+    <xacro:box_inertial
+      mass="0.01"
+      x="${camera_board_depth}"
+      y="${camera_board_width}"
+      z="${camera_board_height}">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+    </xacro:box_inertial>
+  </link>
+
+  <joint name="camera_2_joint" type="fixed">
+    <parent link="${base_frame}"/>
+    <child link="${camera_2_frame}"/>
+    <origin
+      xyz="${camera_2_x} ${camera_2_y} ${camera_2_z - base_z}"
+      rpy="0 ${camera_2_pitch} 0"/>
+  </joint>
+
+  <link name="${camera_2_optical_frame}"/>
+
+  <joint name="camera_2_optical_joint" type="fixed">
+    <parent link="${camera_2_frame}"/>
+    <child link="${camera_2_optical_frame}"/>
+    <origin xyz="0 0 0" rpy="${-pi/2} 0 ${-pi/2}"/>
+  </joint>
+  </xacro:if>
 
   <!-- ====================================================
        시뮬레이션 센서와 구동 플러그인
