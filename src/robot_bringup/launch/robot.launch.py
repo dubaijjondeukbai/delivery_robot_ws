@@ -1,4 +1,5 @@
-"""배달로봇 master launch. 기본값은 주행 비활성이다.
+"""
+배달로봇 master launch. 기본값은 주행 비활성이다.
 
 설정 순서: 패키지 YAML -> robot.yaml -> 명시적 launch 설정.
 안전 노드 두 개는 항상 실행한다.
@@ -11,14 +12,17 @@ sim:=true 일 때:
     자동 설정한다. 지도를 기본 스폰 위치에서 만들었다는 가정이며, 아니면
     sim_amcl_init:=false 로 끄고 RViz 2D Pose Estimate 를 쓴다.
   * rviz:=true: use_sim_time 을 맞춘 RViz(nav2 기본 view)를 함께 띄운다.
+
+카메라: 전방 중앙 1대(camera_node)만 실행한다. 2대 구성 실행 경로는 두지 않는다
+(enable_camera_2:=true 를 주면 거부). 전환 절차는 robot_vision/config/vision.yaml 주석 참고.
 """
 
 import math
 import os
 
 from ament_index_python.packages import (
-    PackageNotFoundError,
     get_package_share_directory,
+    PackageNotFoundError,
 )
 from launch import LaunchDescription
 from launch.actions import (
@@ -78,7 +82,6 @@ def _build_system(context, wiring):
     sim = _boolean(context, 'sim')
     use_sim_time = _boolean(context, 'use_sim_time')
     motion = _boolean(context, 'motion_enabled')
-    second_camera = _boolean(context, 'enable_camera_2')
     sim_estop = _boolean(context, 'sim_estop')
     sim_amcl_init = _boolean(context, 'sim_amcl_init')
     rviz = _boolean(context, 'rviz')
@@ -88,9 +91,12 @@ def _build_system(context, wiring):
             'sim=true requires use_sim_time=true'
         )
 
-    if sim and second_camera:
+    # 2대 구성은 비활성이다. 예전 인자 enable_camera_2 를 true 로 주면 조용히 무시하지 않고 거부한다.
+    legacy_camera_2 = context.launch_configurations.get('enable_camera_2', 'false')
+    if legacy_camera_2.strip().lower() in ('true', '1', 'yes'):
         raise RuntimeError(
-            'The current Gazebo model provides only one camera'
+            'enable_camera_2 was removed: the current configuration uses one front '
+            'camera. See robot_vision/config/vision.yaml for the dual-camera procedure'
         )
 
     # 가짜 E-stop 발행자는 시뮬레이션 밖에서 절대 실행하지 않는다.
@@ -239,7 +245,7 @@ def _build_system(context, wiring):
                 f'sim={sim} '
                 f'use_sim_time={use_sim_time} '
                 f'motion_enabled={motion} '
-                f'camera_2={second_camera} '
+                f'cameras=1(front_center) '
                 f'sim_estop={sim_estop} '
                 f'sim_amcl_init={sim_amcl_init} '
                 f'rviz={rviz}'
@@ -285,6 +291,7 @@ def _build_system(context, wiring):
         )
 
     else:
+        # 전방 중앙 카메라 1대. (시뮬레이션에서는 Gazebo 센서가 같은 토픽을 발행한다.)
         actions.append(
             node(
                 'robot_vision',
@@ -293,21 +300,19 @@ def _build_system(context, wiring):
             )
         )
 
-        if second_camera:
-            actions.append(
-                node(
-                    'robot_vision',
-                    'camera_node',
-                    vision_config,
-                    name='camera_node_2',
-                )
-            )
+        # (비활성) 2대 구성: vision.yaml 의 camera_node_2 예시를 풀고 URDF 에 camera_2 TF 를
+        # 만든 뒤에만 아래와 같이 한 번 더 실행한다.
+        #   actions.append(node('robot_vision', 'camera_node', vision_config,
+        #                       name='camera_node_2'))
+        # 시뮬레이션이면 gazebo.xacro 의 camera_2 센서와 bridge.yaml 항목도 함께 추가한다.
 
     for executable in (
         'apriltag_node',
         'qr_node',
         'detector_node',
         'pose_node',
+        # 사람 위험 판정 히스테리시스 + 급접근 주의 신호(관찰용, 모터 제어 없음)
+        'hazard_monitor_node',
     ):
         actions.append(
             node(
@@ -460,11 +465,6 @@ def generate_launch_description():
             'motion_enabled',
             default_value='false',
             description='Allow Nav2 output to reach robot_safety',
-        ),
-        DeclareLaunchArgument(
-            'enable_camera_2',
-            default_value='false',
-            description='Start camera_node_2 outside simulation',
         ),
         DeclareLaunchArgument(
             'sim_cmd_vel_topic',

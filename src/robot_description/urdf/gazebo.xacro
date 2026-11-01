@@ -99,9 +99,16 @@
     </sensor>
   </gazebo>
 
-  <!-- ================ Front camera ================
+  <!-- ================ Front camera (현재 1대: 전방 중앙) ================
        The sensor is attached to camera_link (looks along +x) but the images are stamped with the
-       optical frame, whose +z is camera_link's +x: pixel geometry and TF agree (same scheme as nav2's TB4 sim). -->
+       optical frame, whose +z is camera_link's +x: pixel geometry and TF agree (same scheme as nav2's TB4 sim).
+       토픽 /camera/image_raw, /camera/camera_info 와 frame camera_optical_frame 은 실물 camera_node
+       (robot_vision/config/vision.yaml) 와 같다. HFOV 는 일반형 공칭값(robot_params.xacro TODO 참고).
+
+       (비활성) 2대 구성으로 바꿀 때: 아래 gazebo 블록을 하나 더 만들어 reference 를 camera_2_frame,
+       sensor name 을 front_camera_2, topic 을 camera_2_image_topic, camera_info_topic 을 camera_2_info_topic,
+       gz_frame_id 를 camera_2_optical_frame 으로 바꾸고, robot_sim/config/bridge.yaml 의 camera_2 주석 항목을 푼다.
+       시뮬레이션의 두 카메라는 같은 시뮬레이션 시각으로 찍히지만 실물 두 카메라는 그렇지 않다(vision.yaml 참고). -->
   <gazebo reference="${camera_frame}">
     <sensor name="front_camera" type="camera">
       <pose>0 0 0 0 0 0</pose>
@@ -156,6 +163,19 @@
       <frame_id>odom</frame_id>
       <child_frame_id>${base_frame}</child_frame_id>
       <odom_publish_frequency>50</odom_publish_frequency>
+    </plugin>
+
+    <!-- SIMULATION-ONLY ground truth (진단 전용): 모델의 실제 월드 자세/속도.
+         motion_chain_monitor 가 회전 중 /wheel/odom·/imu/data·/odom 을 실제 회전과 비교할 때만 쓴다.
+         Nav2/EKF/AMCL 은 이 토픽을 구독하지 않는다(실물에는 존재하지 않는 정보).
+         DiffDrive 의 /model/delivery_robot/odometry 와 겹치지 않도록 별도 토픽을 쓴다. -->
+    <plugin filename="gz-sim-odometry-publisher-system" name="gz::sim::systems::OdometryPublisher">
+      <odom_frame>sim_world</odom_frame>
+      <robot_base_frame>${base_frame}</robot_base_frame>
+      <odom_topic>${gz_ground_truth_topic}</odom_topic>
+      <tf_topic>${gz_ground_truth_tf_topic}</tf_topic>   <!-- NOT bridged -->
+      <odom_publish_frequency>50</odom_publish_frequency>
+      <dimensions>2</dimensions>
     </plugin>
 
     <!-- Wheel joint angles -> /joint_states so robot_state_publisher can publish the wheel TFs -->

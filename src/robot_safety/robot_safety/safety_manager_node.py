@@ -7,6 +7,7 @@
 /cmd_vel_auto              geometry_msgs/msg/Twist
 /estop_state               std_msgs/msg/Bool
 /safety/obstacle_detected   std_msgs/msg/Bool
+/vision/person_hazard      std_msgs/msg/Bool   (use_vision_hazard=true 일 때만, 기본 false)
 
 출력
 ----
@@ -22,6 +23,8 @@
 5. 정지 해제 후에는 새 이동 명령을 기다린다.
 6. linear.x와 angular.z만 사용한다.
 7. 후방 안전 판단을 구현하기 전까지 후진은 기본 금지한다.
+8. 비전 위험 입력은 선택(use_vision_hazard). 켜면 정지 사유만 추가하며 LiDAR/E-stop 판단을
+   대신하지 않는다. True 를 받는 즉시 정지하고, 입력이 끊기면 정지한다(모름 = 정지).
 
 통신 조건
 ---------
@@ -34,8 +37,8 @@ E-stop과 장애물 상태는 상태 변경 시뿐 아니라 주기적으로 발
 
 import math
 
-import rclpy
 from geometry_msgs.msg import Twist
+import rclpy
 from rclpy.clock import Clock, ClockType
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -60,6 +63,9 @@ class SafetyManagerNode(Node):
         'waiting_for_obstacle_state',
         'obstacle_state_timeout',
         'obstacle_detected',
+        'waiting_for_vision_hazard',
+        'vision_hazard_timeout',
+        'vision_hazard',
     ))
 
     def __init__(self):
@@ -82,6 +88,10 @@ class SafetyManagerNode(Node):
             'estop_topic': '/estop_state',
             'obstacle_topic': '/safety/obstacle_detected',
             'state_topic': '/safety/state',
+            # 선택: 비전 사람 위험 입력(robot_vision hazard_monitor_node). 기본 사용 안 함.
+            'use_vision_hazard': False,
+            'vision_hazard_topic': '/vision/person_hazard',
+            'vision_hazard_timeout_sec': 0.5,
         }
 
         for name, value in defaults.items():
@@ -119,6 +129,14 @@ class SafetyManagerNode(Node):
         obstacle_topic = self._topic_parameter('obstacle_topic')
         state_topic = self._topic_parameter('state_topic')
 
+        self.use_vision_hazard = self.get_parameter('use_vision_hazard').value
+        if not isinstance(self.use_vision_hazard, bool):
+            raise ValueError('use_vision_hazard must be a bool')
+        self.vision_hazard_timeout_sec = self._number_parameter(
+            'vision_hazard_timeout_sec'
+        )
+        vision_topic = self._topic_parameter('vision_hazard_topic')
+
         # 입력과 출력이 같은 토픽으로 연결되는 피드백을 방지한다.
         if self.resolve_topic_name(cmd_topic) == (
             self.resolve_topic_name(safe_topic)
@@ -143,10 +161,12 @@ class SafetyManagerNode(Node):
         # --------------------------------------------------
         self.estop_active = True
         self.obstacle_detected = True
+        self.vision_hazard = True
 
         # None이면 아직 해당 입력을 받지 않은 상태다.
         self._last_estop_time = None
         self._last_obstacle_time = None
+        self._last_vision_time = None
         self._last_cmd_time = None
 
         self._latest_auto_cmd = None
@@ -216,6 +236,16 @@ class SafetyManagerNode(Node):
             input_qos,
         )
 
+        # 비전 위험 입력은 켰을 때만 구독한다(끈 상태에서는 기존 동작과 같다).
+        self.vision_sub = None
+        if self.use_vision_hazard:
+            self.vision_sub = self.create_subscription(
+                Bool,
+                vision_topic,
+                self.vision_hazard_callback,
+                input_qos,
+            )
+
         # 기본 실행 방식에서는 모든 콜백이 순서대로 처리된다.
         self.control_timer = self.create_timer(
             1.0 / self.control_rate_hz,
@@ -229,7 +259,9 @@ class SafetyManagerNode(Node):
             f'rate={self.control_rate_hz:.1f} Hz | '
             f'cmd_timeout={self.cmd_timeout_sec:.2f} s | '
             f'obstacle_timeout={self.obstacle_timeout_sec:.2f} s | '
-            f'estop_timeout={self.estop_timeout_sec:.2f} s'
+            f'estop_timeout={self.estop_timeout_sec:.2f} s | '
+            f'vision_hazard='
+            f'{vision_topic if self.use_vision_hazard else "off"}'
         )
 
         # 시작 직후부터 정지 명령을 출력한다.
@@ -306,6 +338,18 @@ class SafetyManagerNode(Node):
 
         elif self.obstacle_detected:
             reason = 'obstacle_detected'
+
+        elif self.use_vision_hazard and self._last_vision_time is None:
+            reason = 'waiting_for_vision_hazard'
+
+        elif (
+            self.use_vision_hazard
+            and now - self._last_vision_time >= self.vision_hazard_timeout_sec
+        ):
+            reason = 'vision_hazard_timeout'
+
+        elif self.use_vision_hazard and self.vision_hazard:
+            reason = 'vision_hazard'
 
         else:
             reason = ''
@@ -407,6 +451,20 @@ class SafetyManagerNode(Node):
         self._last_obstacle_time = now
 
         # 장애물 해제 후에도 새 이동 명령을 기다린다.
+        self.publish_safe_command()
+
+    # ======================================================
+    # 비전 사람 위험 콜백 (use_vision_hazard=true 일 때만 구독)
+    # ======================================================
+    def vision_hazard_callback(self, msg):
+        now = self._now()
+
+        self._check_safety(now)
+
+        self.vision_hazard = bool(msg.data)
+        self._last_vision_time = now
+
+        # True 를 받은 그 콜백에서 바로 정지 명령을 낸다(다음 타이머를 기다리지 않음).
         self.publish_safe_command()
 
     # ======================================================

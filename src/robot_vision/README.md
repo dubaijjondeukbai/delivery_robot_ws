@@ -32,6 +32,11 @@ Raspberry Pi 5 배달로봇의 **perception 패키지**(ROS 2, `ament_python`).
 | `/vision/detections` | `vision_msgs/Detection2DArray` | detector_node | 추론마다 publish (빈 배열 포함) |
 | `/vision/debug_image` | `sensor_msgs/Image` | detector_node | `publish_annotated_image: true` 일 때만 |
 | `/vision/apriltag_debug_image` | `sensor_msgs/Image` | apriltag_node | `publish_debug_image: true` 일 때만 |
+| `/vision/person_hazard` | `std_msgs/Bool` | hazard_monitor_node | 사람 위험(히스테리시스 적용). STALE 도 기본 True. Safety 연결은 `use_vision_hazard`(기본 false) |
+| `/vision/hazard_state` | `std_msgs/String`(JSON) | hazard_monitor_node | 상태·사유·트랙별 화면상 단서(급접근 주의 신호, 미터 단위 아님)·카운터 |
+
+카메라는 현재 **전방 중앙 1대**(`camera_node`)만 실행한다. 2대(전방 좌우) 전환 절차는 `config/vision.yaml` 의
+`(비활성) 2번 카메라` 주석, 히스테리시스·급접근 설계는 워크스페이스 `docs/vision_hazard_design.md` 참고.
 
 ## 패키지 구조
 

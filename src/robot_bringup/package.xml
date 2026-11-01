@@ -13,6 +13,15 @@
   <exec_depend>ros2launch</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
 
+  <!-- motion_chain_monitor (관찰 전용 진단 노드) -->
+  <exec_depend>action_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>rcl_interfaces</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+
   <!-- Packages launched by robot.launch.py -->
   <exec_depend>robot_vision</exec_depend>
   <exec_depend>robot_follower</exec_depend>
@@ -35,6 +44,8 @@
   <test_depend>ament_flake8</test_depend>
   <test_depend>ament_pep257</test_depend>
   <test_depend>python3-pytest</test_depend>
+  <test_depend>python3-yaml</test_depend>
+  <test_depend>xacro</test_depend>
 
   <export>
     <build_type>ament_python</build_type>

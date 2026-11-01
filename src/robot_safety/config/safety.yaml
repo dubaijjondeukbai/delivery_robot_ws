@@ -59,6 +59,16 @@ safety_manager_node:
     # sim_estop_publisher 가 안 떠 있는 것이다 (robot.launch.py sim_estop).
     state_topic: /safety/state
 
+    # 선택 입력: 비전 사람 위험(robot_vision hazard_monitor_node, /vision/person_hazard Bool).
+    # 기본 false = 구독하지 않음(기존 동작 그대로). true 로 켜면:
+    #   * True 수신 즉시 STOP:vision_hazard (히스테리시스는 해제에만 있고 진입 지연 없음)
+    #   * 입력이 vision_hazard_timeout_sec 이상 끊기면 STOP:vision_hazard_timeout
+    #   * 해제 후에도 다른 정지와 같이 새 이동 명령을 기다린다.
+    # 미보정 단안 카메라의 화면상 판정이므로 LiDAR/E-stop 을 대신하지 않는다(추가 정지 사유일 뿐).
+    use_vision_hazard: false
+    vision_hazard_topic: /vision/person_hazard
+    vision_hazard_timeout_sec: 0.5
+
 
 lidar_obstacle_node:
   ros__parameters:

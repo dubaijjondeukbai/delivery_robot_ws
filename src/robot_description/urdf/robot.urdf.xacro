@@ -17,17 +17,16 @@
 
   차체 관성을 고정 자식 body_link로 분리하여
   KDL의 루트 링크 관성 제한에 대응한다.
-  치수는 robot_params.xacro(2026-10-27 CompleteDesign CAD 실측)를 따른다:
+  치수는 robot_params.xacro(2026-10-27 CompleteDesign CAD 바운딩박스, 실측 아님)를 따른다:
   적재함이 로봇 전체를 덮고, 측면 디스플레이, 리프트 다리 4개, 전방 끝 아치 위 LiDAR,
-  전면 하단 범퍼의 카메라(기본 1개 중앙 = camera_link; front_camera_count=2 면
-  camera_link 좌측 + camera_2_link 우측).
+  전면 하단 범퍼 중앙의 카메라 1대(camera_link).
 
   map / odom은 navigation이 담당한다.
   이 모델을 사용할 때 별도의 중복 센서 TF를 발행하지 않는다.
 
-  카메라: Raspberry Pi Camera Module 3 (Wide). 현재 1개(전면 하단 범퍼 중앙) 기준.
-  2개 구성은 robot_params.xacro 의 front_camera_count 를 2 로 바꾸면 켜지며,
-  그때 2번 카메라는 link/TF 만 만들고 Gazebo 센서는 1번만 시뮬레이션한다.
+  카메라: Raspberry Pi Camera Module 3, 전방 중앙 1대만 활성(camera_link -> camera_optical_frame).
+  2대(전방 좌우 '눈') 구성은 아래 '(비활성) 2번 카메라' 주석 블록과
+  robot_params.xacro 의 전환 절차를 따를 때만 만든다. 기본 모델에는 camera_2_* 가 없다.
 
   sim:=false: 모델/TF용 URDF.
   sim:=true: gazebo.xacro의 센서와 구동 플러그인 포함.
@@ -311,8 +310,8 @@
   </joint>
 
   <!-- ====================================================
-       1번 카메라: Camera Module 3 (Wide)
-       front_camera_count=1 이면 전면 하단 범퍼 중앙, 2 이면 좌측(+y)
+       카메라: 전방 중앙 1대 (위치 TODO 실측, robot_params.xacro)
+       2대 구성으로 바꾸면 이 카메라가 '좌측' 카메라가 된다(이름 유지).
        ==================================================== -->
   <link name="${camera_frame}">
     <visual>
@@ -353,48 +352,22 @@
   </joint>
 
   <!-- ====================================================
-       2번 카메라: Camera Module 3 (Wide), 전면 우측(-y)
-       front_camera_count = 2 일 때만 생성. link/TF 만 제공하며
-       Gazebo 센서는 만들지 않는다. (현재 기준은 1개라 비활성)
+       (비활성) 2번 카메라 = 2대 구성의 '우측' 카메라
+       지금은 생성하지 않는다. 전환할 때 robot_params.xacro 에 camera_2_* 속성
+       (위치·높이는 실측값)을 추가한 뒤 아래 예시를 주석 밖으로 옮긴다.
+       XML 주석 안에서는 하이픈 두 개를 쓸 수 없으므로 예시는 꺾쇠 대신 [ ] 로 적었다.
+
+       [link name="${camera_2_frame}"]  ... camera_link 와 같은 visual/inertial ... [/link]
+       [joint name="camera_2_joint" type="fixed"]
+         [parent link="${base_frame}"/] [child link="${camera_2_frame}"/]
+         [origin xyz="${camera_2_x} ${camera_2_y} ${camera_2_z - base_z}" rpy="0 ${camera_2_pitch} 0"/]
+       [/joint]
+       [link name="${camera_2_optical_frame}"/]
+       [joint name="camera_2_optical_joint" type="fixed"]
+         [parent link="${camera_2_frame}"/] [child link="${camera_2_optical_frame}"/]
+         [origin xyz="0 0 0" rpy="${-pi/2} 0 ${-pi/2}"/]
+       [/joint]
        ==================================================== -->
-  <xacro:if value="${front_camera_count == 2}">
-  <link name="${camera_2_frame}">
-    <visual>
-      <origin
-        xyz="${-camera_board_depth/2} 0 0"
-        rpy="0 0 0"/>
-      <geometry>
-        <box
-          size="${camera_board_depth} ${camera_board_width} ${camera_board_height}"/>
-      </geometry>
-      <material name="sensor_dark"/>
-    </visual>
-
-    <xacro:box_inertial
-      mass="0.01"
-      x="${camera_board_depth}"
-      y="${camera_board_width}"
-      z="${camera_board_height}">
-      <origin xyz="0 0 0" rpy="0 0 0"/>
-    </xacro:box_inertial>
-  </link>
-
-  <joint name="camera_2_joint" type="fixed">
-    <parent link="${base_frame}"/>
-    <child link="${camera_2_frame}"/>
-    <origin
-      xyz="${camera_2_x} ${camera_2_y} ${camera_2_z - base_z}"
-      rpy="0 ${camera_2_pitch} 0"/>
-  </joint>
-
-  <link name="${camera_2_optical_frame}"/>
-
-  <joint name="camera_2_optical_joint" type="fixed">
-    <parent link="${camera_2_frame}"/>
-    <child link="${camera_2_optical_frame}"/>
-    <origin xyz="0 0 0" rpy="${-pi/2} 0 ${-pi/2}"/>
-  </joint>
-  </xacro:if>
 
   <!-- ====================================================
        시뮬레이션 센서와 구동 플러그인

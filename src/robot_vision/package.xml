@@ -12,6 +12,8 @@
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>vision_msgs</exec_depend>
+  <!-- hazard_monitor_node: 로봇 자신의 움직임(/odom) -->
+  <exec_depend>nav_msgs</exec_depend>
 
   <!-- Real camera driver / detection (rosdep keys -> apt ros-<distro>-cv-bridge, python3-opencv, python3-numpy) -->
   <exec_depend>cv_bridge</exec_depend>

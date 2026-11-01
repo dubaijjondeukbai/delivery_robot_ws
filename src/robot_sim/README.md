@@ -17,7 +17,8 @@ launch/sim.launch.py                   robot_state_publisher + gz sim + spawn + 
 |---|---|---|---|
 | `/scan` | `/scan` | gz→ROS | gpu_lidar 360°, 12 m, 10 Hz, frame `laser_link` |
 | `/imu/data` | `/imu/data` | gz→ROS | 100 Hz, frame `imu_link` |
-| `/camera/image_raw`, `/camera/camera_info` | 동일 | gz→ROS | 640×480 rgb8 15 Hz, frame `camera_optical_frame` (실제 intrinsics 포함 → AprilTag pose도 동작) |
+| `/camera/image_raw`, `/camera/camera_info` | 동일 | gz→ROS | 전방 중앙 카메라 1대, 640×480 rgb8 15 Hz, frame `camera_optical_frame` (실제 intrinsics 포함 → AprilTag pose도 동작) |
+| `/sim/ground_truth/odom` | `/model/delivery_robot/ground_truth/odometry` | gz→ROS | **시뮬레이션 전용 지면 실측**(OdometryPublisher). `motion_chain_monitor` 회전 비교용, Nav2/EKF 는 사용 안 함 |
 | `/wheel/odom` | `/model/delivery_robot/odometry` | gz→ROS | DiffDrive 플러그인 odom (frame odom→base_link, TF는 bridge 안 함: EKF 담당). `_with_covariance` 토픽은 이 Gazebo 버전에서 발행되지 않아 사용 안 함 |
 | `/joint_states` | `/joint_states` | gz→ROS | 바퀴 각도 |
 | `/clock` | `/clock` | gz→ROS | 모든 노드 `use_sim_time:=true` |

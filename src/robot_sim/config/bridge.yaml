@@ -41,12 +41,33 @@
   gz_type_name: "gz.msgs.CameraInfo"
   direction: GZ_TO_ROS
 
+# (비활성) 2대 구성 전환 시에만 아래 두 항목의 주석을 푼다. gazebo.xacro 에 camera_2 센서가
+# 있어야 데이터가 나온다(robot_description/urdf/robot_params.xacro 의 전환 절차 참고).
+# - ros_topic_name: "/camera_2/image_raw"
+#   gz_topic_name: "/camera_2/image_raw"
+#   ros_type_name: "sensor_msgs/msg/Image"
+#   gz_type_name: "gz.msgs.Image"
+#   direction: GZ_TO_ROS
+# - ros_topic_name: "/camera_2/camera_info"
+#   gz_topic_name: "/camera_2/camera_info"
+#   ros_type_name: "sensor_msgs/msg/CameraInfo"
+#   gz_type_name: "gz.msgs.CameraInfo"
+#   direction: GZ_TO_ROS
+
 # raw wheel odometry of the drive plugin -> EKF input (frame_id odom, child base_link).
 # The plain odometry topic is used: on the Gazebo shipped with Lyrical the DiffDrive plugin advertises
 # /model/<name>/odometry_with_covariance but never publishes on it (verified 2026-10-06), so bridging it
 # gives an empty /wheel/odom. Zero covariances are replaced by a small epsilon inside the EKF.
 - ros_topic_name: "/wheel/odom"
   gz_topic_name: "/model/delivery_robot/odometry"
+  ros_type_name: "nav_msgs/msg/Odometry"
+  gz_type_name: "gz.msgs.Odometry"
+  direction: GZ_TO_ROS
+
+# SIMULATION-ONLY ground truth (진단 전용): Gazebo OdometryPublisher 가 계산한 실제 자세/속도.
+# robot_bringup motion_chain_monitor 의 ground_truth_topic 으로만 쓴다. Nav2/EKF/AMCL 은 구독하지 않는다.
+- ros_topic_name: "/sim/ground_truth/odom"
+  gz_topic_name: "/model/delivery_robot/ground_truth/odometry"
   ros_type_name: "nav_msgs/msg/Odometry"
   gz_type_name: "gz.msgs.Odometry"
   direction: GZ_TO_ROS

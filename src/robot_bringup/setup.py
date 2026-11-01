@@ -1,5 +1,5 @@
-import os
 from glob import glob
+import os
 
 from setuptools import find_packages, setup
 
@@ -24,13 +24,18 @@ setup(
     ],
     install_requires=['setuptools'],
     zip_safe=True,
+    # colcon test 가 pytest 로 test/ 를 실행하도록 한다(robot_safety 와 같은 방식).
+    extras_require={
+        'test': ['pytest'],
+    },
     maintainer='developer',                    # TODO: your name
     maintainer_email='developer@todo.todo',    # TODO: your email
     description='Master package: launches the whole delivery robot system and loads parameters.',
     license='Apache-2.0',
     entry_points={
         'console_scripts': [
-            # robot_bringup has no nodes (launch + config only)
+            # 관찰 전용 진단 노드(구독만 함): Nav2 -> Safety -> 구동 -> EKF 명령 흐름 기록
+            'motion_chain_monitor = robot_bringup.motion_chain_monitor:main',
         ],
     },
 )

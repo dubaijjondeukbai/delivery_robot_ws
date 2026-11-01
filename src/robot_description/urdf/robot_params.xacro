@@ -16,10 +16,11 @@
     - 적재함이 로봇 전체를 덮는 0.781 × 0.642 × 0.500 상자가 되었고, 양 측면에
       디스플레이(400×250, 베젤 포함 두께 ~0.033)가 붙어 전체 폭은 0.708.
     - LiDAR 는 중앙이 아니라 전방 끝의 아치 위(x +0.261)로 옮겨졌다.
-    - 전면 카메라는 얼굴의 '눈' 부품(z 0.40)이 아니라 전면 하단 범퍼의 까만 점 자리
-      (디테일 모델 Body281/357: x 0.348, y ±0.130, z 0.102). 2026-11-01: 1개(중앙) 기준으로
-      두고 front_camera_count 로 2개(눈처럼 양옆) 구성을 전환한다.
-  질량·관성·IMU 위치·스캔면 높이(0.78)는 실측이 아니라 추정값이다.
+    - 전면 카메라는 얼굴의 '눈' 부품(z 0.40)이 아니라 전면 하단 범퍼 자리.
+      2026-11-01: 현재 구성은 전방 중앙 카메라 1대뿐이다(활성). 향후 2대(눈처럼 전방 좌우)
+      구성은 아래 '카메라' 절의 주석 절차로만 전환하며, 좌우 간격·높이는 실측 전이라
+      값을 넣어 두지 않는다(front_camera_count 스위치는 제거).
+  질량·관성·IMU 위치·스캔면 높이(0.78)·카메라 위치는 실측이 아니라 추정값이다.
 
   *_z는 수평 바닥에 서 있을 때 바닥 기준 높이이다.
   base_link의 높이는 wheel_radius이며, URDF에서 상대 높이로 변환한다.
@@ -34,9 +35,11 @@
   <xacro:property name="chassis_bottom_z" value="0.050"/>
 
   <!--
-    바퀴 4개. 실물은 4륜 독립 구동·독립 조향(4WIS, 2026-10-30 결정)이지만 CAD 메시에는
-    조향 액추에이터가 보이지 않고, 현재 Gazebo 모델은 DiffDrive(스키드) 근사다.
-    4WIS 시뮬레이션은 별도 작업. 바퀴 위치·반지름은 그대로 쓴다.
+    바퀴 4개. 실물 계획(2026-11-01 기준): 인휠 모터 4개 구동 + 앞바퀴 조향 서보 2개
+    (앞바퀴 조향, 제자리 회전 불가). 2026-10-30 메모의 '4륜 독립 조향(4WIS)'과 다르므로
+    실물 구동 방식 확정 시 다시 맞춘다. 현재 Gazebo 모델은 조향 관절 없는 DiffDrive(스키드)
+    근사이며 제자리 회전을 허용한다 → 시뮬레이션과 실물의 차이는
+    docs/drive_kinematics_gap.md 참고. 바퀴 위치·반지름은 그대로 쓴다.
     wheel_x: 앞/뒤 바퀴 중심 간격의 절반 (축거 0.460).
     wheel_y: 좌/우 바퀴 중심 간격의 절반 (윤거 0.541).
     chassis_width는 바퀴 등을 포함한 로봇 전체 폭이 아니다.
@@ -61,9 +64,16 @@
   <xacro:property name="max_linear_acceleration" value="1.0"/>
   <xacro:property name="max_angular_acceleration" value="2.0"/>
 
-  <!-- Gazebo 마찰 계수: 기존 근사값 유지, 실물 시험으로 조정 필요 -->
+  <!--
+    Gazebo 바퀴 마찰 계수(시뮬레이션 전용, 실물 값 아님).
+    2026-11-01: mu2 0.5 → 1.0 (등방성). fdir1 없이 mu1≠mu2 로 두면 마찰 방향이 바퀴 회전과
+    무관하게 정해져 제자리 회전량이 로봇 방향에 따라 들쭉날쭉했다(클라우드 Harmonic 측정:
+    명령 0.1/0.2/0.3/0.5 rad/s → 실제 0.071/0.097/0.047/0.006 rad/s). 등방성으로 바꾼 뒤
+    0.072/0.119/0.191/0.321 rad/s 로 일관됨(스키드 미끄럼 때문에 명령의 약 60~70%).
+    스키드 미끄럼 때문에 /wheel/odom 의 yaw rate 는 실제보다 약 1.5배 크다 → EKF 는 IMU yaw rate 사용.
+  -->
   <xacro:property name="wheel_mu1" value="1.0"/>
-  <xacro:property name="wheel_mu2" value="0.5"/>
+  <xacro:property name="wheel_mu2" value="1.0"/>
 
   <!-- 적재함(외함): 메시 Body1, x ±0.3907, y ±0.321, z 0.150~0.650 -->
   <xacro:property name="cargo_length" value="0.781"/>
@@ -136,39 +146,20 @@
   <xacro:property name="lidar_noise_std" value="0.01"/>
 
   <!--
-    전면 카메라: Raspberry Pi Camera Module 3 (Wide).
-    위치는 전면 하단 범퍼(z 0.034~0.170)의 까만 점 자리이며, 얼굴의 '눈' 부품(z 0.40)이 아니다.
-    디테일 모델 Body281/357: base_link 기준 x 0.348, y ±0.130, z 0.102 (범퍼 전면은 x 0.355).
+    ================= 전면 카메라 (현재: 전방 중앙 1대) =================
+    Raspberry Pi Camera Module 3. TODO(확인): 일반형(HFOV 약 66°)인지 Wide(약 102°)인지
+    문서마다 다르다(vision.yaml 은 일반형, robot_vision README 는 Wide). camera_hfov 는 일반형 값이다.
 
-      front_camera_count = 1 : 범퍼 전면 중앙 (0.350, 0.0, 0.102)      <- 현재 기준
-      front_camera_count = 2 : 눈처럼 양옆  (0.348, ±0.130, 0.102)     <- 값만 2 로 바꾸면 전환
-
-    2 로 바꾸면 camera_link 가 좌측(+y)으로 가고 camera_2_link(우측, -y)와 TF 가 생긴다.
+    위치: 전면 하단 범퍼 중앙. 값은 CAD 바운딩박스에서 옮긴 추정값이다.
+    TODO(실측): camera_x / camera_z / camera_pitch 를 실물에서 재고 바꾼다.
     camera_link: x 전방, y 좌측, z 위쪽.
-    camera_optical_frame: x 우측, y 아래쪽, z 전방.
-    pitch 는 미확인(0). 지면에서 0.10 m 라 전방 바닥이 화면 아래쪽에 넓게 들어온다.
+    camera_optical_frame: x 우측, y 아래쪽, z 전방 (REP-103 optical, 영상 header.frame_id).
+    영상 /camera/image_raw, CameraInfo /camera/camera_info (vision.yaml camera_node 와 같아야 함).
   -->
-  <xacro:property name="front_camera_count" value="1"/>
-
-  <!-- 1개 기준(중앙) -->
-  <xacro:property name="camera_single_x" value="0.350"/>
-  <xacro:property name="camera_single_y" value="0.0"/>
-
-  <!-- 2개 기준(양옆) — front_camera_count = 2 일 때만 사용 -->
-  <xacro:property name="camera_pair_x" value="0.348"/>
-  <xacro:property name="camera_pair_y" value="0.130"/>
-
-  <xacro:property name="camera_x"
-                  value="${camera_single_x if front_camera_count == 1 else camera_pair_x}"/>
-  <xacro:property name="camera_y"
-                  value="${camera_single_y if front_camera_count == 1 else camera_pair_y}"/>
-  <xacro:property name="camera_z" value="0.102"/>
-  <xacro:property name="camera_pitch" value="0.0"/>
-  <!-- 2번 카메라(우측): front_camera_count = 2 일 때만 link/TF 생성 -->
-  <xacro:property name="camera_2_x" value="${camera_pair_x}"/>
-  <xacro:property name="camera_2_y" value="${-camera_pair_y}"/>
-  <xacro:property name="camera_2_z" value="0.102"/>
-  <xacro:property name="camera_2_pitch" value="0.0"/>
+  <xacro:property name="camera_x" value="0.350"/>   <!-- TODO 실측 -->
+  <xacro:property name="camera_y" value="0.0"/>     <!-- 중앙 -->
+  <xacro:property name="camera_z" value="0.102"/>   <!-- TODO 실측 (바닥 기준) -->
+  <xacro:property name="camera_pitch" value="0.0"/> <!-- TODO 실측 (아래로 숙이면 +) -->
   <xacro:property name="camera_board_depth" value="0.0115"/>
   <xacro:property name="camera_board_width" value="0.025"/>
   <xacro:property name="camera_board_height" value="0.024"/>
@@ -183,6 +174,27 @@
   -->
   <xacro:property name="camera_hfov" value="${66.0 * pi / 180.0}"/>
   <xacro:property name="camera_rate_hz" value="15.0"/>
+
+  <!--
+    ================= (비활성) 향후 카메라 2대 = 전방 좌우 '눈' 배치 =================
+    지금은 아무것도 생성하지 않는다. 전환할 때만 아래 순서로 바꾼다.
+      1) 중앙 카메라를 좌측으로 옮긴다: camera_y 를 +(좌측 반간격)으로, camera_z 를 좌측 장착 높이로.
+         이름(camera_link / camera_optical_frame / /camera/*)은 그대로 두어 비전 노드 입력을 유지한다.
+      2) 우측 카메라 속성을 추가한다(예시, 값은 실측 후 채운다):
+           camera_2_frame          = camera_2_link
+           camera_2_optical_frame  = camera_2_optical_frame
+           camera_2_image_topic    = /camera_2/image_raw
+           camera_2_info_topic     = /camera_2/camera_info
+           camera_2_x / camera_2_y(우측이므로 음수) / camera_2_z / camera_2_pitch = TODO 실측
+         좌우 간격(baseline)과 높이는 실측 전이므로 숫자를 미리 넣지 않는다.
+         (CAD 참고 위치는 프로젝트 문서 robot-dimensions-cad 에만 있고 확정값이 아니다.)
+      3) robot.urdf.xacro 의 '(비활성) 2번 카메라' 주석 블록을 풀어 camera_2_link /
+         camera_2_optical_frame TF 를 만든다. optical joint rpy 는 1번과 같은 (-pi/2, 0, -pi/2).
+      4) 시뮬레이션이 필요하면 gazebo.xacro 의 카메라 센서를 camera_2_link 에 하나 더 두고
+         robot_sim/config/bridge.yaml 에 /camera_2/* 두 항목을 추가한다(각 파일에 주석 예시).
+      5) 실물 드라이버는 robot_vision/config/vision.yaml 의 camera_node_2 주석 예시
+         (고유 ID, 카메라별 보정값, optical frame, 토픽, 영상 동기화 조건)를 따른다.
+  -->
 
   <!-- IMU: 장착 위치 미확인, 기존 값(섀시 중앙, z 0.10) 유지 -->
   <xacro:property name="imu_x" value="0.0"/>
@@ -204,20 +216,13 @@
   <xacro:property name="camera_info_topic" value="/camera/camera_info"/>
   <xacro:property name="joint_states_topic" value="/joint_states"/>
 
-  <!--
-    두 번째 카메라: vision.yaml(camera_node_2)과 같은 이름.
-    front_camera_count = 2 일 때만 URDF 에 link/TF 를 만든다. Gazebo 센서는 1번 카메라만
-    시뮬레이션한다(robot.launch.py 가 sim 에서 enable_camera_2 를 거부함).
-  -->
-  <xacro:property name="camera_2_frame" value="camera_2_link"/>
-  <xacro:property name="camera_2_optical_frame" value="camera_2_optical_frame"/>
-  <xacro:property name="camera_2_image_topic" value="/camera_2/image_raw"/>
-  <xacro:property name="camera_2_info_topic" value="/camera_2/camera_info"/>
-
   <!-- Gazebo 구동 플러그인의 내부 토픽: 기존 bridge와 호환 유지 -->
   <xacro:property name="gz_cmd_vel_topic" value="/model/delivery_robot/cmd_vel"/>
   <xacro:property name="gz_odom_topic" value="/model/delivery_robot/odometry"/>
   <xacro:property name="gz_odom_cov_topic" value="/model/delivery_robot/odometry_with_covariance"/>
   <xacro:property name="gz_tf_topic" value="/model/delivery_robot/tf"/>
+  <!-- 시뮬레이션 전용 지면 실측(진단용, robot_sim/config/bridge.yaml -> /sim/ground_truth/odom) -->
+  <xacro:property name="gz_ground_truth_topic" value="/model/delivery_robot/ground_truth/odometry"/>
+  <xacro:property name="gz_ground_truth_tf_topic" value="/model/delivery_robot/ground_truth/tf"/>
 
 </robot>

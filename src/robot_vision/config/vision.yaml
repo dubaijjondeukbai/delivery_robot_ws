@@ -2,13 +2,16 @@
 # vision.yaml
 # ============================================================
 #
-# 하드웨어:
-#   Raspberry Pi Camera Module 3 일반형 2대
+# 하드웨어 (2026-11-01 기준):
+#   Raspberry Pi Camera Module 3 1대 — 로봇 전방 중앙(전면 하단 범퍼).
+#   TODO(확인): 일반형인지 Wide 인지(README 는 Wide 로 적혀 있음).
+#   향후 2대(전방 좌우 '눈' 배치)는 아래 '(비활성) 2번 카메라' 주석 절차로만 전환한다.
 #
 # 주의:
-#   1. 이 파일은 설정만 제공한다. 노드를 자동 실행하지 않는다.
-#   2. camera_node_2와 pose_node는 별도 실행 등록/launch가 필요하다.
-#   3. 카메라의 장착 위치와 방향은 URDF/TF에서 설정한다.
+#   1. 이 파일은 설정만 제공한다. 노드는 robot_bringup/launch/robot.launch.py 가 실행한다.
+#   2. 기본 실행은 카메라 1대(camera_node)만 시작한다. camera_node_2 블록은 주석이다.
+#   3. 카메라의 장착 위치와 방향은 URDF/TF에서 설정한다(robot_description/urdf/robot_params.xacro).
+#      영상 header.frame_id(camera_optical_frame)는 URDF 의 optical frame 이름과 같아야 한다.
 #   4. robot_bringup/config/robot.yaml이 나중에 로드되면
 #      이 파일의 일부 설정을 덮어쓸 수 있다.
 #   5. 아래 수치는 실물 검증 전 초기 설정값이다.
@@ -21,8 +24,10 @@
 
 
 # ============================================================
-# 1번 카메라
-# 기존 이름과 토픽을 유지한다.
+# 전방 중앙 카메라 (현재 유일한 카메라)
+# 토픽/frame 은 Gazebo 센서(gazebo.xacro)·bridge.yaml·URDF 와 같다:
+#   /camera/image_raw, /camera/camera_info, camera_optical_frame
+# 2대 구성으로 바꾸면 이 블록이 '좌측' 카메라가 된다(이름·토픽은 유지).
 # ============================================================
 camera_node:
   ros__parameters:
@@ -91,62 +96,60 @@ camera_node:
 
 
 # ============================================================
-# 2번 카메라 — 실행 연결 전 준비 설정
+# (비활성) 2번 카메라 = 2대 구성의 '우측' 카메라 — 주석 예시만 둔다
 #
-# camera_node 실행 파일을 camera_node_2라는 이름으로
-# 실행해야 이 설정 블록이 적용된다.
+# 전환 절차
+#   1. URDF: robot_params.xacro 의 전환 절차대로 중앙 카메라를 좌측으로 옮기고
+#      camera_2_link / camera_2_optical_frame 을 추가한다(좌우 간격·높이는 실측값).
+#   2. 이 파일: 아래 camera_node_2 예시의 주석을 푼다. 1번(camera_node)은 좌측이 된다.
+#   3. launch: robot_bringup/launch/robot.launch.py 의 '2대 구성' 주석대로
+#      camera_node 를 name='camera_node_2' 로 한 번 더 실행한다(현재는 거부하도록 되어 있음).
+#   4. robot_bringup/config/robot.yaml 에 camera_node_2 블록을 추가한다(use_camera 등).
 #
-# camera_id=1은 실물에서 반드시 확인한다.
-# 번호는 전방/후방 위치를 의미하지 않는다.
+# 카메라별로 반드시 달라야 하는 것
+#   - 고유 ID: camera_unique_id 에 Picamera2.global_camera_info() 의 'Id' 를 각각 넣는다
+#     (CSI 포트마다 다름). 번호(camera_id 0/1)는 연결 순서일 뿐 좌/우를 뜻하지 않는다.
+#   - 보정값: 카메라마다 따로 보정한다. 1번 값을 복사하지 않는다. 같은 해상도·고정 초점에서 보정.
+#   - optical frame: camera_2_optical_frame (URDF 에 TF 가 있어야 함).
+#   - 토픽: /camera_2/image_raw, /camera_2/camera_info.
 #
-# camera_2_optical_frame은 별도 프레임 이름이다.
-# 공간 정보를 결합하기 전 실제 장착 위치에 맞는 TF가 필요하다.
+# 영상 동기화 조건 (두 영상을 함께 쓰는 처리를 만들 때)
+#   - 지금 camera_node 의 stamp 는 호스트가 프레임을 받은 시각이며 두 카메라의 노출 동기를
+#     보장하지 않는다(카메라는 각자 free-run).
+#   - 함께 쓰려면: 같은 해상도·프레임레이트·노출 모드, stamp 를 센서 노출 시각(Picamera2
+#     메타데이터 SensorTimestamp)으로 바꾸기, message_filters ApproximateTime 로 짝짓되
+#     허용 오차(slop)는 프레임 간격의 절반 이하(15 fps 면 33 ms 이하)로 두고, 짝이 안 맞는
+#     프레임은 버린다. 하드웨어/libcamera 동기화 사용 여부는 실물에서 확인(TODO).
+#   - 동기 조건을 만족하기 전에는 두 영상을 하나의 거리 추정(스테레오 등)에 쓰지 않는다.
+#
+# 예시 (값은 1번과 같은 형식, 보정값·ID 는 실물에서 채운다):
+#
+# camera_node_2:
+#   ros__parameters:
+#     use_sim_time: false
+#     use_camera: false
+#     camera_backend: picamera2
+#     camera_id: 1                      # 연결 순서 번호(좌/우 아님)
+#     camera_unique_id: ""              # TODO: 우측 카메라의 Picamera2 'Id'
+#     image_width: 640
+#     image_height: 480
+#     publish_rate_hz: 15.0
+#     frame_id: camera_2_optical_frame
+#     image_topic: /camera_2/image_raw
+#     camera_info_topic: /camera_2/camera_info
+#     picamera2_format: RGB888
+#     picamera2_autofocus: true
+#     picamera2_lens_position: 0.0
+#     fourcc: ""
+#     gstreamer_pipeline: ""
+#     calibration_width: 0              # TODO: 우측 카메라 자체 보정값
+#     calibration_height: 0
+#     intrinsics: {fx: 0.0, fy: 0.0, cx: 0.0, cy: 0.0}
+#     distortion: {k1: 0.0, k2: 0.0, p1: 0.0, p2: 0.0, k3: 0.0}
+#     reopen_after_failures: 15
+#     reopen_interval_sec: 2.0
+#     heartbeat_period_sec: 5.0
 # ============================================================
-camera_node_2:
-  ros__parameters:
-    use_sim_time: false
-    use_camera: false
-
-    camera_backend: picamera2
-    camera_id: 1
-    camera_unique_id: ""
-
-    image_width: 640
-    image_height: 480
-    publish_rate_hz: 15.0
-
-    frame_id: camera_2_optical_frame
-    image_topic: /camera_2/image_raw
-    camera_info_topic: /camera_2/camera_info
-
-    picamera2_format: RGB888
-    picamera2_autofocus: true
-    picamera2_lens_position: 0.0
-
-    fourcc: ""
-    gstreamer_pipeline: ""
-
-    # 카메라마다 별도로 보정한다.
-    # 1번 카메라의 보정값을 그대로 복사하지 않는다.
-    calibration_width: 0
-    calibration_height: 0
-
-    intrinsics:
-      fx: 0.0
-      fy: 0.0
-      cx: 0.0
-      cy: 0.0
-
-    distortion:
-      k1: 0.0
-      k2: 0.0
-      p1: 0.0
-      p2: 0.0
-      k3: 0.0
-
-    reopen_after_failures: 15
-    reopen_interval_sec: 2.0
-    heartbeat_period_sec: 5.0
 
 
 # ============================================================
@@ -301,3 +304,87 @@ pose_node:
     tracker_reset_gap_sec: 1.0
     model_retry_sec: 5.0
     heartbeat_period_sec: 5.0
+
+
+# ============================================================
+# 사람 위험 판정 히스테리시스 + 급접근 주의 신호 (hazard_monitor_node)
+#
+# 입력 /vision/detections(사람 클래스), 출력:
+#   /vision/person_hazard (Bool)   HAZARD 또는 STALE(+stale_is_hazard) 이면 True
+#   /vision/hazard_state  (String) JSON: 상태·사유·트랙별 화면상 단서·카운터
+#
+# 진입은 지연 없음(한 프레임이라도 조건 충족 시 즉시), 해제는 clear_frames + clear_sec,
+# 검출 누락 유예(miss_grace_sec), 추적 ID 변경 이어 붙이기, 입력 단절 시 STALE.
+# 모든 좌표는 영상 정규화 좌표(0~1)이며 미보정 단안 카메라 기준의 '화면상' 값이다.
+# 거리·m/s·충돌 시간을 계산하지 않는다. 아래 영역/크기 값은 TODO: 실물 장착 후 맞춘다.
+#
+# robot_safety 는 safety.yaml 의 use_vision_hazard: true 일 때만 이 출력을 정지 입력으로 쓴다
+# (기본 false = 관찰만).
+# ============================================================
+hazard_monitor_node:
+  ros__parameters:
+    use_sim_time: false
+    enabled: true
+
+    detections_topic: /vision/detections
+    camera_info_topic: /camera/camera_info
+    hazard_topic: /vision/person_hazard
+    state_topic: /vision/hazard_state
+    publish_rate_hz: 10.0
+    heartbeat_period_sec: 5.0
+
+    # camera_info 가 없을 때 쓰는 영상 크기
+    image_width: 640
+    image_height: 480
+
+    # detector_node use_class_names=false 면 "0", true 면 "person"
+    person_class_ids: ["0", "person"]
+    min_score: 0.40
+
+    # 로봇 정면 통로가 화면에 보이는 사다리꼴(정규화 x,y 순서쌍을 펼친 목록).
+    # TODO(실물): 카메라 높이·pitch 실측 후 로봇 폭이 바닥에 닿는 선으로 다시 그린다.
+    path_zone: [0.15, 1.00, 0.85, 1.00, 0.62, 0.55, 0.38, 0.55]
+    path_zone_exit_margin: 0.05
+
+    # '가까움' 화면 프록시: bbox 높이/영상 높이(진입 > 해제), 머리가 잘리면 발 위치 y 사용
+    near_height_enter: 0.45
+    near_height_exit: 0.35
+    near_foot_y_enter: 0.60
+    near_foot_y_exit: 0.57
+
+    # 해제(두 조건 모두): 연속 clear 프레임 수와 시간
+    clear_frames: 5
+    clear_sec: 1.0
+    # 위험 판정을 받은 사람이 검출에서 사라져도 이 시간 동안은 있다고 본다
+    miss_grace_sec: 0.5
+    track_drop_sec: 2.0
+    # 주의 신호용 트랙 확인 관측 수(위험 진입에는 적용하지 않음)
+    confirm_frames: 3
+    # 검출 메시지가 이 시간 이상 없으면 STALE
+    input_timeout_sec: 1.0
+    stale_is_hazard: true
+    # 추적 ID 가 바뀐 같은 사람 이어 붙이기
+    id_switch_iou: 0.3
+    id_switch_max_gap_sec: 1.0
+
+    # 급접근(보행자가 경로 쪽으로 뛰어듦) 화면상 주의 신호 — Safety 입력 아님
+    approach_window_sec: 1.2
+    approach_min_obs: 4
+    approach_min_span_sec: 0.4
+    lateral_speed_watch: 0.15      # 영상 폭/s
+    lateral_speed_alert: 0.30      # 영상 폭/s
+    expansion_rate_watch: 0.25     # d ln(bbox 높이)/dt, 1/s
+    expansion_rate_alert: 0.50
+    min_r2: 0.5
+    attention_hold_sec: 1.0
+    # 로봇 자신의 움직임: /odom(EKF) 우선, 없으면 /cmd_vel_safe
+    ego_odom_topic: /odom
+    ego_cmd_topic: /cmd_vel_safe
+    ego_timeout_sec: 0.5
+    nominal_hfov_deg: 66.0         # 미보정 공칭값, yaw 로 인한 화면 이동의 근사 보정용
+    max_ego_yaw_rate: 0.25         # rad/s 초과 시 수평 이동 신호 불신
+    max_ego_speed_for_expansion: 0.05   # m/s 초과 시 확대율 신호 불신
+
+    # Pose 발목 키포인트로 발 위치 보정(보조). pose_node 가 꺼져 있으면 의미 없음.
+    poses_topic: /vision/poses
+    use_pose_keypoints: false

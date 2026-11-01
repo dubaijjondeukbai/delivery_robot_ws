@@ -38,6 +38,10 @@ setup(
     # 이 항목만으로 torch/ultralytics가 설치되지는 않는다.
     install_requires=['setuptools'],
     zip_safe=True,
+    # colcon test 가 pytest 로 test/ 를 실행하도록 한다(robot_safety 와 같은 방식).
+    extras_require={
+        'test': ['pytest'],
+    },
 
     # 기존 메타데이터 유지
     maintainer='developer',
@@ -64,6 +68,10 @@ setup(
 
             # ros2 run robot_vision pose_node
             'pose_node = robot_vision.pose_node:main',
+
+            # ros2 run robot_vision hazard_monitor_node
+            # 사람 위험 판정 히스테리시스 + 급접근(화면상 주의 신호)
+            'hazard_monitor_node = robot_vision.hazard_monitor_node:main',
         ],
     },
 )
