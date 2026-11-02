@@ -1,7 +1,8 @@
 """
 QR 배달 시연 실행 (robot.launch.py nav_mode:=navigation 과 robot_base base.launch.py 는 따로 띄운다).
 
-    ros2 launch robot_bringup delivery_demo.launch.py esp32_port:=/dev/serial/by-id/<ESP32>  # 실물
+    ros2 launch robot_bringup delivery_demo.launch.py esp32_port:=/dev/serial/by-id/<ESP32> \
+        display:=true                                                             # 실물 (Pi)
     ros2 launch robot_bringup delivery_demo.launch.py mock_lid:=true sim:=true   # 시뮬 + 가짜 뚜껑
 
 esp32_port 를 주면 팀원 패키지의 esp32_serial_bridge 를 그 포트로 함께 띄운다.
@@ -49,6 +50,11 @@ def _build(context):
         actions.append(Node(package='robot_bringup', executable='mock_lid_esp32',
                             name='mock_lid_esp32', output='screen',
                             parameters=[{'limit_switches': switches}]))
+    if _truthy(LaunchConfiguration('display').perform(context)):
+        actions.append(Node(package='robot_bringup', executable='delivery_display',
+                            name='delivery_display', output='screen',
+                            parameters=[{'use_sim_time': sim, 'fullscreen': _truthy(
+                                LaunchConfiguration('display_fullscreen').perform(context))}]))
     if esp32_port:
         actions.append(Node(package='delivery_robot_bridge', executable='esp32_serial_bridge',
                             name='esp32_serial_bridge', output='screen',
@@ -66,6 +72,10 @@ def generate_launch_description():
         DeclareLaunchArgument('require_drive_stopped', default_value='',
                               description='빈 값 = delivery_demo.yaml. '
                                           'false = STM32 DRIVE_STOPPED 없이 /odom 만으로 정지 확인'),
+        DeclareLaunchArgument('display', default_value='false',
+                              description='Pi 모니터에 미션 상태 표시 (delivery_display, pygame)'),
+        DeclareLaunchArgument('display_fullscreen', default_value='true',
+                              description='false = 1024x600 창 (노트북에서 미리 보기)'),
         DeclareLaunchArgument('mock_limit_switches', default_value='false',
                               description='가짜 ESP32 에 리미트 스위치가 있다고 볼지 (실물: 없음)'),
         DeclareLaunchArgument('esp32_port', default_value='',

@@ -42,6 +42,10 @@ setup(
             'delivery_demo = robot_bringup.delivery_demo:main',
             # 가짜 ESP32 뚜껑 (펌웨어 없이 delivery_demo 시험)
             'mock_lid_esp32 = robot_bringup.mock_lid_esp32:main',
+            # Pi 모니터에 미션 상태 표시 (pygame)
+            'delivery_display = robot_bringup.delivery_display:main',
+            # 운영자 콘솔: 키 입력으로 START/OPEN/CLOSE/CANCEL/RESET
+            'delivery_console = robot_bringup.delivery_console:main',
         ],
     },
 )
