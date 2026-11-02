@@ -9,6 +9,7 @@
 /safety/obstacle_detected   std_msgs/msg/Bool
 /vision/person_hazard      std_msgs/msg/Bool   (use_vision_hazard=true 일 때만, 기본 false)
 /delivery/lid_closed       std_msgs/msg/Bool   (use_lid_interlock=true 일 때만, 기본 false)
+/safety/rear_obstacle_detected  std_msgs/msg/Bool   (allow_reverse_escape=true 일 때만, 기본 false)
 
 출력
 ----
@@ -23,7 +24,10 @@
 4. 정지 중 받은 이동 명령은 저장하지 않는다.
 5. 정지 해제 후에는 새 이동 명령을 기다린다.
 6. linear.x와 angular.z만 사용한다.
-7. 후방 안전 판단을 구현하기 전까지 후진은 기본 금지한다.
+7. 후진은 기본 금지한다(max_reverse_velocity 0). allow_reverse_escape=true 일 때만
+   후방 LiDAR 영역(두 번째 lidar_obstacle_node, 뒤쪽 섹터)이 비어 있는 동안 느린 직선 후진을 허용한다.
+   후진 명령에는 전방 장애물 정지를 적용하지 않고(벽 앞에서 빠져나오기 위함) 후방 장애물 정지를
+   적용하며, 회전(angular.z)은 0 으로 만든다(앞바퀴 조향 차가 후진하며 꺾으면 앞이 옆으로 쓸린다).
 8. 비전 위험 입력은 선택(use_vision_hazard). 켜면 정지 사유만 추가하며 LiDAR/E-stop 판단을
    대신하지 않는다. True 를 받는 즉시 정지하고, 입력이 끊기면 정지한다(모름 = 정지).
 9. 뚜껑 인터록은 선택(use_lid_interlock). 켜면 뚜껑이 닫힘(True)이 아닐 때와 입력이 끊겼을 때
@@ -72,6 +76,9 @@ class SafetyManagerNode(Node):
         'waiting_for_lid_state',
         'lid_state_timeout',
         'lid_open',
+        'waiting_for_rear_obstacle_state',
+        'rear_obstacle_state_timeout',
+        'rear_obstacle_detected',
     ))
 
     def __init__(self):
@@ -102,6 +109,10 @@ class SafetyManagerNode(Node):
             'use_lid_interlock': False,
             'lid_closed_topic': '/delivery/lid_closed',
             'lid_state_timeout_sec': 1.0,
+            # 선택: 막혔을 때 느린 후진 탈출(Nav2 BackUp). 기본 사용 안 함.
+            'allow_reverse_escape': False,
+            'rear_obstacle_topic': '/safety/rear_obstacle_detected',
+            'rear_obstacle_timeout_sec': 0.5,
         }
 
         for name, value in defaults.items():
@@ -155,6 +166,21 @@ class SafetyManagerNode(Node):
         )
         lid_topic = self._topic_parameter('lid_closed_topic')
 
+        self.allow_reverse_escape = self.get_parameter('allow_reverse_escape').value
+        if not isinstance(self.allow_reverse_escape, bool):
+            raise ValueError('allow_reverse_escape must be a bool')
+        self.rear_obstacle_timeout_sec = self._number_parameter(
+            'rear_obstacle_timeout_sec'
+        )
+        rear_topic = self._topic_parameter('rear_obstacle_topic')
+        if self.allow_reverse_escape and self.max_reverse_velocity <= 0.0:
+            raise ValueError(
+                'allow_reverse_escape needs max_reverse_velocity > 0'
+            )
+        if not self.allow_reverse_escape:
+            # 후방 판단 없이 후진하지 않는다(설정 파일의 값과 관계없이).
+            self.max_reverse_velocity = 0.0
+
         # 입력과 출력이 같은 토픽으로 연결되는 피드백을 방지한다.
         if self.resolve_topic_name(cmd_topic) == (
             self.resolve_topic_name(safe_topic)
@@ -181,15 +207,18 @@ class SafetyManagerNode(Node):
         self.obstacle_detected = True
         self.vision_hazard = True
         self.lid_closed = False
+        self.rear_obstacle_detected = True
 
         # None이면 아직 해당 입력을 받지 않은 상태다.
         self._last_estop_time = None
         self._last_obstacle_time = None
         self._last_vision_time = None
         self._last_lid_time = None
+        self._last_rear_time = None
         self._last_cmd_time = None
 
         self._latest_auto_cmd = None
+        self._last_cmd_reverse = False  # 마지막으로 받은 명령이 후진(탈출)인지
         self._command_block_reason = 'waiting_for_new_command'
         self._last_output_reason = None
 
@@ -276,6 +305,16 @@ class SafetyManagerNode(Node):
                 input_qos,
             )
 
+        # 후방 장애물 입력은 후진 탈출을 켰을 때만 구독한다.
+        self.rear_sub = None
+        if self.allow_reverse_escape:
+            self.rear_sub = self.create_subscription(
+                Bool,
+                rear_topic,
+                self.rear_obstacle_callback,
+                input_qos,
+            )
+
         # 기본 실행 방식에서는 모든 콜백이 순서대로 처리된다.
         self.control_timer = self.create_timer(
             1.0 / self.control_rate_hz,
@@ -293,7 +332,10 @@ class SafetyManagerNode(Node):
             f'vision_hazard='
             f'{vision_topic if self.use_vision_hazard else "off"} | '
             f'lid_interlock='
-            f'{lid_topic if self.use_lid_interlock else "off"}'
+            f'{lid_topic if self.use_lid_interlock else "off"} | '
+            f'reverse_escape='
+            f'{rear_topic if self.allow_reverse_escape else "off"}'
+            f' (max {self.max_reverse_velocity:.2f} m/s)'
         )
 
         # 시작 직후부터 정지 명령을 출력한다.
@@ -343,13 +385,18 @@ class SafetyManagerNode(Node):
         self._last_cmd_time = None
         self._command_block_reason = reason
 
-    def _check_safety(self, now):
+    def _check_safety(self, now, reverse=None):
         """
         안전 입력을 검사한다.
 
+        reverse 가 True 면 후진 명령 기준(전방 대신 후방 장애물), None 이면 마지막으로 받은
+        명령의 방향 기준(저장된 명령이 있으면 그 명령의 방향과 같다).
         차단 상태이면 명령을 폐기하고 원인 문자열을 반환한다.
         안전하면 빈 문자열을 반환한다.
         """
+        if reverse is None:
+            reverse = self._last_cmd_reverse
+
         if self._last_estop_time is None:
             reason = 'waiting_for_estop_state'
 
@@ -368,8 +415,20 @@ class SafetyManagerNode(Node):
         ):
             reason = 'obstacle_state_timeout'
 
-        elif self.obstacle_detected:
+        elif self.obstacle_detected and not reverse:
             reason = 'obstacle_detected'
+
+        elif reverse and self._last_rear_time is None:
+            reason = 'waiting_for_rear_obstacle_state'
+
+        elif (
+            reverse
+            and now - self._last_rear_time >= self.rear_obstacle_timeout_sec
+        ):
+            reason = 'rear_obstacle_state_timeout'
+
+        elif reverse and self.rear_obstacle_detected:
+            reason = 'rear_obstacle_detected'
 
         elif self.use_vision_hazard and self._last_vision_time is None:
             reason = 'waiting_for_vision_hazard'
@@ -409,8 +468,16 @@ class SafetyManagerNode(Node):
     def cmd_callback(self, msg):
         now = self._now()
 
+        # 후진 탈출 명령(allow_reverse_escape 일 때만): 전방 대신 후방 장애물로 판단한다.
+        reverse = (
+            self.allow_reverse_escape
+            and math.isfinite(msg.linear.x)
+            and msg.linear.x < -1e-3
+        )
+        self._last_cmd_reverse = reverse
+
         # 안전 입력이 오래됐거나 위험 상태라면 이동 명령을 저장하지 않는다.
-        if self._check_safety(now):
+        if self._check_safety(now, reverse):
             self.publish_safe_command()
             return
 
@@ -445,21 +512,28 @@ class SafetyManagerNode(Node):
         # 원본 메시지와 분리된 새로운 Twist에 제한값을 적용한다.
         safe_cmd = Twist()
 
-        safe_cmd.linear.x = max(
-            -self.max_reverse_velocity,
-            min(
-                self.max_linear_velocity,
+        if reverse:
+            # 느린 직선 후진만 (회전 0)
+            safe_cmd.linear.x = max(
+                -self.max_reverse_velocity,
                 float(msg.linear.x),
-            ),
-        )
+            )
+        else:
+            safe_cmd.linear.x = max(
+                0.0,
+                min(
+                    self.max_linear_velocity,
+                    float(msg.linear.x),
+                ),
+            )
 
-        safe_cmd.angular.z = max(
-            -self.max_angular_velocity,
-            min(
-                self.max_angular_velocity,
-                float(msg.angular.z),
-            ),
-        )
+            safe_cmd.angular.z = max(
+                -self.max_angular_velocity,
+                min(
+                    self.max_angular_velocity,
+                    float(msg.angular.z),
+                ),
+            )
 
         self._latest_auto_cmd = safe_cmd
         self._last_cmd_time = now
@@ -509,6 +583,20 @@ class SafetyManagerNode(Node):
         self._last_vision_time = now
 
         # True 를 받은 그 콜백에서 바로 정지 명령을 낸다(다음 타이머를 기다리지 않음).
+        self.publish_safe_command()
+
+    # ======================================================
+    # 후방 장애물 콜백 (allow_reverse_escape=true 일 때만 구독)
+    # ======================================================
+    def rear_obstacle_callback(self, msg):
+        now = self._now()
+
+        self._check_safety(now)
+
+        self.rear_obstacle_detected = bool(msg.data)
+        self._last_rear_time = now
+
+        # 후진 중 뒤에 장애물이 들어오면 그 콜백에서 바로 정지한다.
         self.publish_safe_command()
 
     # ======================================================

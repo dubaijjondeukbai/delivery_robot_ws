@@ -60,15 +60,23 @@ ros2 launch robot_bringup robot.launch.py nav_mode:=navigation motion_enabled:=t
 3. 순회: `ros2 run robot_bringup stations tour p1 p2 p3 p4 --loop --dwell 5`  (Ctrl+C = 목표 취소·정지)
 4. 한 곳만: `ros2 run robot_bringup stations go p2`
 
-### 동선 규칙 (앞바퀴 조향 ±60°, 후진 없음)
+### 동선 규칙 (앞바퀴 조향 ±60°, 경로는 전진만)
 * 최소 회전반경(차체 중심) 약 0.6 m, Nav2 경로는 0.7 m 로 계획(`nav2.yaml minimum_turning_radius`).
   ±60° 는 실측 전 값이다(서보 링크 때문에 바퀴 각이 다를 수 있음) → 실측해서 `base.yaml max_steer_deg` 수정.
 * **U턴은 폭 3 m 이상 빈 곳에서만**, 되도록 한 방향으로 도는 고리 동선(앞 0.8 m 정지 구역 때문).
-* 벽·부스 모서리에서 **1 m 이상** 떨어진 동선. 앞 0.8 m(±35°) 안에 물체가 있으면 Safety 가 멈추는데,
-  벽을 마주 보고 멈추면 후진이 안 돼 **스스로 못 빠져나온다** → E-stop 후 손으로 옮긴다.
+* 벽·부스 모서리에서 **1 m 이상** 떨어진 동선. 앞 0.8 m(±35°) 안에 물체가 있으면 Safety 가 멈춘다.
 * 사람이 앞 0.8 m 안에 들어오면 멈췄다가, 비키면 다시 간다(정상).
-* 시뮬레이션 확인(클라우드, Jazzy): 직진·완만한 곡선 목표는 성공. 장애물 가까운 U턴 목표는 0.8 m 정지
-  구역에 걸려 막혔다(±30° 일 때 시험) → 위 규칙이 필요한 이유. ±60° 로 U턴은 다시 시험하지 않았다.
+* **후진 탈출** (`reverse_escape:=true`, `demo:=true` 에 포함): 막혀서 Nav2 가 실패하면 첫 복구로
+  0.8 m 를 0.08 m/s 로 곧게 후진한 뒤 다시 계획한다. Safety 는 뒤쪽 LiDAR 영역(뒤 ±35°, LiDAR 에서 1.4 m
+  = 차체 뒤끝에서 약 0.74 m)이 비어 있을 때만 통과시키고, 후진 중에 누가 들어오면 바로 멈춘다.
+  뚜껑이 열려 있으면 뒤가 가려져 후진하지 않는다. 처음에 실물에서 뒤에 아무것도 없을 때
+  `ros2 topic echo /safety/rear_distance` 가 1.4 보다 큰지 확인(작으면 로봇 자기 몸이 보이는 것 → 알려 주세요).
+* 시뮬레이션(클라우드, Jazzy, 벽 0.67 m 앞에서 뒤쪽 목표):
+  - 후진 탈출 없이: 로봇이 전혀 움직이지 못하고 30 s 만에 목표 실패.
+  - 후진 탈출 켬: 0.8 m 후진 → 벽에서 빠져나와 목표 근처(0.4 m 안)까지 갔다. 다만 목표 방향 맞추기에서
+    맴돌아 시간 안에 완료하지 못했다(시뮬은 Lyrical 전용 BT 노드가 없어 매초 재계획하는 기본 트리를 썼다).
+  - 뒤 1.1 m 에 벽이 있을 때 후진 명령: Safety 가 `STOP:rear_obstacle_detected` 로 막음, 이동 0 m.
+  → 벽 바로 앞에서 되돌아 나오는 동선은 여전히 피한다(위 규칙).
 
 ## 4-1. QR 배달 시연 (출발 QR → 이동 → 정지 → 도착 QR → 뚜껑 열기)
 
@@ -76,10 +84,10 @@ QR 내용(문자열 그대로 QR 코드로 만든다): `START:A` (A 로 출발),
 지점 이름 = QR 의 A/B (영문·숫자·`_`·`-`, 40자 이내).
 
 ```bash
-# 준비: 4 의 T3 대신 (Pi 4 이므로 vision:=qr, 실제 카메라 camera:=true, 뚜껑 인터록, 출발점 HOME)
-ros2 launch robot_bringup robot.launch.py nav_mode:=navigation motion_enabled:=true vision:=qr \
-  camera:=true lid_interlock:=true initial_station:=HOME \
-  map:=$HOME/maps/roboworld.yaml ekf_params_file:=$EKF_WHEEL                               # T3
+# 준비: 4 의 T3 대신. demo:=true = vision:=qr camera:=true lid_interlock:=true reverse_escape:=true
+# (하나만 끄려면 예: reverse_escape:=false 를 덧붙인다). 출발점 HOME 은 4 의 1번 참고.
+ros2 launch robot_bringup robot.launch.py nav_mode:=navigation motion_enabled:=true demo:=true \
+  initial_station:=HOME map:=$HOME/maps/roboworld.yaml ekf_params_file:=$EKF_WHEEL       # T3
 # 지점 저장 (처음 한 번): 로봇을 A 위치·도착 방향으로 놓고
 ros2 run robot_bringup stations record A        # B 도 같은 방법. ~/maps/stations.yaml 에 저장
 # 시연 노드 + ESP32 브리지(팀원 esp32_serial_bridge) + Pi 모니터 화면
@@ -119,7 +127,7 @@ Pi 모니터 화면(`display:=true`, `delivery_display`): 미션 상태를 한�
 
 펌웨어 없이 먼저 시험 (가짜 뚜껑, 시뮬):
 ```bash
-ros2 launch robot_bringup robot.launch.py sim:=true nav_mode:=navigation motion_enabled:=true vision:=qr
+ros2 launch robot_bringup robot.launch.py sim:=true nav_mode:=navigation motion_enabled:=true demo:=true
 ros2 launch robot_bringup delivery_demo.launch.py sim:=true mock_lid:=true display:=true display_fullscreen:=false
 ros2 run robot_bringup delivery_console          # a → (도착 후) oa → c
 ```
@@ -160,6 +168,8 @@ tmux 창마다 위 T1~T6 을 실행하고, 콘솔(`delivery_console`)과 teleop 
 | 뚜껑이 안 움직이고 시간 초과 | ESP32 포트(`esp32_port`), 펌웨어가 `LID_*` 를 아는지, 시리얼 터미널로 `LID_OPEN` 직접 시험 |
 | `STOP:waiting_for_lid_state` / `STOP:lid_state_timeout` | `lid_interlock:=true` 인데 `delivery_demo` 가 안 떠 있음 |
 | `STOP:lid_open` | 뚜껑이 닫힘이 아님 → `CLOSE` (모터 고장이면 손으로 닫고 `delivery_demo` 재시작) |
+| `STOP:rear_obstacle_detected` | 후진 탈출 중 뒤에 물체(1.4 m 안) → 비키면 다음 복구에서 다시 시도 |
+| 뒤에 아무것도 없는데 후진을 안 함 | `/safety/rear_distance` 확인: 1.4 이하면 자기 몸·뚜껑이 보이는 것 |
 | `initial_station 'HOME' is not in ...` | `stations record HOME` 을 먼저 (2D Pose Estimate 로 맞춘 뒤) |
 | 카메라 화면이 검정, QR 안 읽힘 | T3 에 `camera:=true` 를 안 붙임 |
 | 모니터에 "연결 대기" | `delivery_demo` 가 안 떠 있음 / 다른 `ROS_DOMAIN_ID` |

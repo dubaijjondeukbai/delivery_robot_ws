@@ -32,7 +32,9 @@ Launch arguments (defaults from config/localization.yaml unless noted):
     odom_topic, map_topic, publish_sensor_tf, use_sim_time, autostart,
     nav_to_pose_bt_xml (default: behavior_trees/nav_to_pose_replan_on_invalid_path.xml of this
                         package = Nav2 default tree + replanning on INVALID_PATH(103) + no BackUp
-                        while robot_safety blocks reversing; '' = Nav2 built-in default tree)
+                        while robot_safety blocks reversing; '' = Nav2 built-in default tree;
+                        robot.launch.py reverse_escape:=true passes nav_to_pose_backup_escape.xml =
+                        the same tree with a 0.8 m BackUp as the first recovery)
 """
 
 import os

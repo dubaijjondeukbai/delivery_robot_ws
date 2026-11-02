@@ -20,6 +20,9 @@ camera:=true: 실제 카메라(robot.yaml 의 use_camera: false = 검은 시험 
 initial_station:=HOME: stations.yaml 의 HOME 을 AMCL 초기 위치로 (로봇을 그 자리에 두고 켠다).
   실행 중에 다시 맞출 때는 ros2 run robot_bringup stations init HOME.
 lid_interlock:=true: 뚜껑이 닫힘이 아니면 Safety 가 바퀴를 세운다(QR 시연, delivery_demo 필요).
+reverse_escape:=true: 막혔을 때 Nav2 복구가 0.3 m 직선 후진(BackUp)을 하고, Safety 는 뒤쪽 LiDAR
+  영역(lidar_rear_obstacle_node)이 비어 있을 때만 0.08 m/s 까지 통과시킨다.
+demo:=true: 위 값들을 따로 주지 않으면 vision=qr camera=true lid_interlock=true reverse_escape=true.
 
 vision (기본 full): full = 카메라 + apriltag/qr/detector/pose/hazard_monitor 전부,
   qr = 카메라 + qr_node 만 (Pi 4 에서 QR 배달 시연할 때 CPU 절약), none = 비전 노드 없음.
@@ -85,6 +88,18 @@ def _boolean(context, name):
     ).evaluate(context)
 
 
+def _option(context, name, fallback):
+    """빈 값이면 fallback(demo 프리셋 등), 아니면 true/false."""
+    value = LaunchConfiguration(name).perform(context).strip().lower()
+    if not value:
+        return fallback
+    if value in ('true', '1', 'yes', 'on'):
+        return True
+    if value in ('false', '0', 'no', 'off'):
+        return False
+    raise RuntimeError(f'{name} must be true/false (got {value!r})')
+
+
 def _include(package, filename, arguments):
     return IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -109,9 +124,15 @@ def _build_system(context, wiring):
     sim_amcl_init = _boolean(context, 'sim_amcl_init')
     sim_steer_limit = _boolean(context, 'sim_steer_limit')
     rviz = _boolean(context, 'rviz')
-    vision = LaunchConfiguration('vision').perform(context).strip().lower()
-    camera = _boolean(context, 'camera')
-    lid_interlock = _boolean(context, 'lid_interlock')
+    # demo:=true = QR 배달 시연 묶음(아래 네 값의 기본값만 바꾼다. 따로 주면 그 값이 우선).
+    demo = _boolean(context, 'demo')
+    vision = (
+        LaunchConfiguration('vision').perform(context).strip().lower()
+        or ('qr' if demo else 'full')
+    )
+    camera = _option(context, 'camera', demo)
+    lid_interlock = _option(context, 'lid_interlock', demo)
+    reverse_escape = _option(context, 'reverse_escape', demo)
     initial_station = LaunchConfiguration('initial_station').perform(context).strip()
 
     if vision not in VISION_SETS:
@@ -249,12 +270,19 @@ def _build_system(context, wiring):
             remappings=remappings or [],
         )
 
+    safety_overrides = {}
+    if lid_interlock:
+        # 뚜껑이 닫힘이 아니면 정지 (QR 시연 delivery_demo 가 상태를 낸다)
+        safety_overrides['use_lid_interlock'] = True
+    if reverse_escape:
+        # 뒤쪽 LiDAR 영역이 비어 있을 때만 느린 직선 후진(Nav2 BackUp) 허용
+        safety_overrides['allow_reverse_escape'] = True
+
     safety_manager = node(
         'robot_safety',
         'safety_manager_node',
         safety_config,
-        # lid_interlock:=true: 뚜껑이 닫힘이 아니면 정지 (QR 시연 delivery_demo 가 상태를 낸다)
-        overrides={'use_lid_interlock': True} if lid_interlock else None,
+        overrides=safety_overrides or None,
         remappings=[
             ('/cmd_vel_auto', auto_topic),
         ],
@@ -271,6 +299,26 @@ def _build_system(context, wiring):
         },
     )
 
+    safety_nodes = [
+        (safety_manager, 'safety_manager_node'),
+        (lidar_obstacle, 'lidar_obstacle_node'),
+    ]
+
+    if reverse_escape:
+        # 같은 실행 파일을 뒤쪽 섹터 설정(safety.yaml lidar_rear_obstacle_node)으로 하나 더 띄운다.
+        lidar_rear = node(
+            'robot_safety',
+            'lidar_obstacle_node',
+            safety_config,
+            name='lidar_rear_obstacle_node',
+            overrides={
+                'scan_topic': LaunchConfiguration(
+                    'scan_topic'
+                ).perform(context),
+            },
+        )
+        safety_nodes.append((lidar_rear, 'lidar_rear_obstacle_node'))
+
     # 안전 프로세스 종료 시 전체 launch 종료를 요청한다.
     # 실제 모터 통신 단절 정지는 별도 MCU watchdog이 담당해야 한다.
     handlers = [
@@ -286,10 +334,7 @@ def _build_system(context, wiring):
                 ],
             )
         )
-        for action, name in (
-            (safety_manager, 'safety_manager_node'),
-            (lidar_obstacle, 'lidar_obstacle_node'),
-        )
+        for action, name in safety_nodes
     ]
 
     actions = [
@@ -307,13 +352,12 @@ def _build_system(context, wiring):
                 f'vision={vision} '
                 f'camera={"real" if camera else "test_pattern(robot.yaml)"} '
                 f'initial_station={initial_station or "-"} '
-                f'lid_interlock={lid_interlock}'
+                f'demo={demo} '
+                f'lid_interlock={lid_interlock} '
+                f'reverse_escape={reverse_escape}'
             )
         ),
-    ] + handlers + [
-        safety_manager,
-        lidar_obstacle,
-    ]
+    ] + handlers + [action for action, _ in safety_nodes]
 
     actions.append(
         _include(
@@ -492,6 +536,12 @@ def _build_system(context, wiring):
                 )
             )
 
+        if mode == 'navigation' and reverse_escape:
+            # 복구에 짧은 후진(BackUp)을 넣은 BT (Safety allow_reverse_escape 와 짝)
+            navigation_arguments['nav_to_pose_bt_xml'] = _share(
+                'robot_navigation', 'behavior_trees', 'nav_to_pose_backup_escape.xml'
+            )
+
         if mode == 'navigation':
             navigation_arguments.update({
                 'motion_enabled': str(motion).lower(),
@@ -639,19 +689,28 @@ def generate_launch_description():
             description='Start RViz (nav2 default view) with use_sim_time',
         ),
         DeclareLaunchArgument(
+            'demo',
+            default_value='false',
+            description=(
+                'QR delivery demo preset: the empty options below default to '
+                'vision=qr camera=true lid_interlock=true reverse_escape=true'
+            ),
+        ),
+        DeclareLaunchArgument(
             'vision',
-            default_value='full',
+            default_value='',
             description=(
                 'full = all vision nodes, qr = camera + qr_node only '
-                '(Pi 4 QR delivery demo), none = no vision nodes'
+                '(Pi 4 QR delivery demo), none = no vision nodes; '
+                'empty = full (qr with demo:=true)'
             ),
         ),
         DeclareLaunchArgument(
             'camera',
-            default_value='false',
+            default_value='',
             description=(
                 'true = real camera (overrides use_camera in robot.yaml); '
-                'false = robot.yaml setting (test pattern)'
+                'false/empty = robot.yaml setting (test pattern); empty = true with demo:=true'
             ),
         ),
         DeclareLaunchArgument(
@@ -664,10 +723,18 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'lid_interlock',
-            default_value='false',
+            default_value='',
             description=(
                 'true = robot_safety stops the wheels unless /delivery/lid_closed is True '
-                '(QR demo; needs delivery_demo running)'
+                '(QR demo; needs delivery_demo running); empty = false (true with demo:=true)'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'reverse_escape',
+            default_value='',
+            description=(
+                'true = slow straight reverse (Nav2 BackUp recovery) allowed by robot_safety '
+                'while the rear LiDAR sector is clear; empty = false (true with demo:=true)'
             ),
         ),
         DeclareLaunchArgument(

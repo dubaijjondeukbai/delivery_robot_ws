@@ -40,9 +40,13 @@ safety_manager_node:
     max_linear_velocity: 0.3
     max_angular_velocity: 0.5
 
-    # 후방 안전 판단을 구현하기 전까지 후진 금지.
-    # 후진 속도의 크기를 양수로 설정하는 파라미터다.
-    max_reverse_velocity: 0.0
+    # 후진 속도의 크기(양수). allow_reverse_escape 가 false 면 이 값과 관계없이 후진 금지(0).
+    # allow_reverse_escape: true (robot.launch.py reverse_escape:=true) 일 때만 쓰인다:
+    #   뒤쪽 LiDAR 영역(lidar_rear_obstacle_node)이 비어 있을 때 Nav2 BackUp 의 직선 후진을 이 속도까지 허용.
+    max_reverse_velocity: 0.08
+    allow_reverse_escape: false
+    rear_obstacle_topic: /safety/rear_obstacle_detected
+    rear_obstacle_timeout_sec: 0.5
 
     # 입력 토픽.
     cmd_vel_auto_topic: /cmd_vel_auto
@@ -147,3 +151,31 @@ lidar_obstacle_node:
     # NaN: 데이터 이상 / 불확실.
     # +inf: inf_is_clear=true이고 유효 데이터가 모두 +inf.
     distance_topic: /safety/front_distance
+
+# 후방 장애물 판단 (robot.launch.py reverse_escape:=true 일 때만 실행).
+# 같은 lidar_obstacle_node 실행 파일을 이름만 바꿔 뒤쪽 섹터로 하나 더 띄운다.
+# 결과는 safety_manager_node 가 후진(탈출) 명령에만 쓴다. 전방 판단에는 영향 없음.
+lidar_rear_obstacle_node:
+  ros__parameters:
+    use_sim_time: false
+    # 뒤쪽: LaserScan 프레임에서 180° 를 중심으로 ±35°.
+    front_center_deg: 180.0
+    front_angle_deg: 35.0
+    # LiDAR 원점 기준 거리. LiDAR 는 전방 끝(base_link 앞 0.261 m)이라 차체 뒤끝(base_link 뒤 0.395 m)까지
+    # 0.656 m 다. stop 1.4 = 뒤끝에서 약 0.74 m 안에 물체가 있으면 후진하지 않음(후진 중에도 계속 확인, 0.08 m/s).
+    # 실물에서 뒤에 아무것도 없을 때 /safety/rear_distance 가 1.4 보다 커야 한다(로봇 자기 몸이 보이면 조정).
+    # 뚜껑이 열리면 뒤쪽이 가려져(range_min 이하) 판단 불가 → 후진하지 않는다.
+    stop_distance: 1.4
+    release_distance: 1.6
+    min_points: 1
+    clear_scans_required: 3
+    min_valid_fraction: 0.8
+    scan_timeout: 0.5
+    max_scan_age_sec: 0.5
+    future_tolerance_sec: 0.1
+    state_publish_rate_hz: 20.0
+    inf_is_clear: false
+    expected_scan_frame: laser_link
+    scan_topic: /scan
+    obstacle_topic: /safety/rear_obstacle_detected
+    distance_topic: /safety/rear_distance

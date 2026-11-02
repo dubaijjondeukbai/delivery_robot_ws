@@ -30,6 +30,9 @@ SAFETY_TEXT = {
     'lid_open': ('뚜껑이 닫혀 있지 않아 주행을 막았습니다', True, 'warn'),
     'lid_state_timeout': ('뚜껑 상태 신호 끊김: delivery_demo 확인', False, 'error'),
     'waiting_for_lid_state': ('뚜껑 상태 신호 대기 중: delivery_demo 확인', False, 'warn'),
+    'rear_obstacle_detected': ('뒤에 장애물이 있어 후진하지 않습니다', False, 'warn'),
+    'rear_obstacle_state_timeout': ('후방 LiDAR 판단 끊김: 후진 안 함', False, 'error'),
+    'waiting_for_rear_obstacle_state': ('후방 LiDAR 판단 대기 중', False, 'warn'),
 }
 
 MOVING_STATES = ('NAVIGATING', 'RETURNING')

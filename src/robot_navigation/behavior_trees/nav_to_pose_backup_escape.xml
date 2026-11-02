@@ -1,0 +1,101 @@
+<!--
+  robot_navigation/behavior_trees/nav_to_pose_backup_escape.xml
+
+  nav_to_pose_replan_on_invalid_path.xml 과 같고, 복구 RoundRobin 에 짧은 후진(BackUp)을 넣은 BT.
+  robot.launch.py reverse_escape:=true 일 때만 쓴다(robot_safety allow_reverse_escape 와 함께):
+  Safety 가 뒤쪽 LiDAR 영역이 비어 있을 때만 느린 직선 후진(최대 0.08 m/s)을 통과시킨다.
+
+  복구 순서(막힐 때마다 하나씩): 1) 0.8 m 후진  2) 코스트맵 비우기  3) 5 s 대기  → 반복
+  벽을 마주 보고 멈춘 경우(앞 0.8 m 정지 구역) 앞으로는 못 가므로 먼저 뒤로 빠진 뒤 다시 계획한다.
+  주의: 경로 계획은 여전히 전진만(DUBIN)이라, 좁은 곳에서 되돌아 나오는(U턴) 목표는 후진 뒤에도
+  돌 공간이 없으면 실패할 수 있다(동선 규칙: U턴은 폭 3 m 이상).
+  뒤가 막혀 있으면 BackUp 은 Safety 에 막혀 시간 초과로 실패하고 다음 복구로 넘어간다.
+  Spin 은 여전히 쓰지 않는다(앞바퀴 조향 ±60°: 뒷차축 중심 회전은 차체 중심이 원을 그린다).
+-->
+<root BTCPP_format="4" main_tree_to_execute="NavigateToPoseWReplanningAndRecovery">
+  <BehaviorTree ID="NavigateToPoseWReplanningAndRecovery">
+    <RecoveryNode number_of_retries="6" name="NavigateRecovery">
+      <PipelineSequence name="NavigateWithReplanning">
+        <ProgressCheckerSelector
+          selected_progress_checker="{selected_progress_checker}"
+          default_progress_checker="progress_checker" topic_name="progress_checker_selector"/>
+        <GoalCheckerSelector
+          selected_goal_checker="{selected_goal_checker}"
+          default_goal_checker="general_goal_checker" topic_name="goal_checker_selector"/>
+        <PathHandlerSelector
+          selected_path_handler="{selected_path_handler}"
+          default_path_handler="PathHandler" topic_name="path_handler_selector"/>
+        <ControllerSelector
+          selected_controller="{selected_controller}"
+          default_controller="FollowPath" topic_name="controller_selector"/>
+        <PlannerSelector
+          selected_planner="{selected_planner}"
+          default_planner="GridBased" topic_name="planner_selector"/>
+        <RateController hz="1.0">
+          <RecoveryNode number_of_retries="1" name="ComputePathToPose">
+            <Fallback name="FallbackComputePathToPose">
+              <ReactiveSequence name="CheckIfNewPathNeeded">
+                <Inverter>
+                  <GlobalUpdatedGoal/>
+                </Inverter>
+                <IsGoalNearby path="{path}" proximity_threshold="4.0"
+                  max_robot_pose_search_dist="1.5"/>
+                <TruncatePathLocal input_path="{path}" output_path="{remaining_path}"
+                  distance_forward="-1" distance_backward="0.0" />
+                <ValidatePath path="{remaining_path}"/>
+              </ReactiveSequence>
+              <ComputePathToPose goal="{goal}" path="{path}" planner_id="{selected_planner}"
+                error_code_id="{compute_path_error_code}" error_msg="{compute_path_error_msg}"/>
+            </Fallback>
+            <Sequence>
+              <WouldAPlannerRecoveryHelp error_code="{compute_path_error_code}"/>
+              <ClearEntireCostmap name="ClearGlobalCostmap-Context"
+                service_name="global_costmap/clear_entirely_global_costmap"/>
+            </Sequence>
+          </RecoveryNode>
+        </RateController>
+        <RecoveryNode number_of_retries="2" name="FollowPath">
+          <FollowPath path="{path}" controller_id="{selected_controller}"
+            error_code_id="{follow_path_error_code}" error_msg="{follow_path_error_msg}"
+            tracking_feedback="{tracking_feedback}"/>
+          <!-- [변경 1] 복구 대상 코드(100/104/105/106)는 기존대로 로컬 코스트맵만 비우고,
+               그 밖의 코드(103 INVALID_PATH 등)는 현재 위치에서 즉시 재계획한 뒤 FollowPath 재시도 -->
+          <Fallback name="FollowPathRecovery">
+            <Sequence>
+              <WouldAControllerRecoveryHelp error_code="{follow_path_error_code}"/>
+              <ClearEntireCostmap name="ClearLocalCostmap-Context"
+                service_name="local_costmap/clear_entirely_local_costmap"/>
+            </Sequence>
+            <ComputePathToPose goal="{goal}" path="{path}" planner_id="{selected_planner}"
+              error_code_id="{compute_path_error_code}" error_msg="{compute_path_error_msg}"/>
+          </Fallback>
+        </RecoveryNode>
+      </PipelineSequence>
+      <Sequence>
+        <Fallback>
+          <WouldAControllerRecoveryHelp error_code="{follow_path_error_code}"/>
+          <WouldAPlannerRecoveryHelp error_code="{compute_path_error_code}"/>
+        </Fallback>
+        <ReactiveFallback name="RecoveryFallback">
+          <GoalUpdated/>
+          <RoundRobin name="RecoveryActions">
+            <!-- 1) 직선 후진 0.8 m: Safety 가 뒤가 비어 있을 때만 통과(0.08 m/s, 약 10 s). 앞 0.8 m 정지 구역에
+                    걸린 벽에서 돌아 나갈 공간을 만든다. 뒤가 막혀 있으면 14 s 뒤 실패하고 다음으로 -->
+            <BackUp backup_dist="0.80" backup_speed="0.08" time_allowance="14.0"
+              error_code_id="{backup_error_code}" error_msg="{backup_error_msg}"/>
+            <!-- 2) 코스트맵 비우기 -->
+            <Sequence name="ClearingActions">
+              <ClearEntireCostmap name="ClearLocalCostmap-Subtree"
+                service_name="local_costmap/clear_entirely_local_costmap"/>
+              <ClearEntireCostmap name="ClearGlobalCostmap-Subtree"
+                service_name="global_costmap/clear_entirely_global_costmap"/>
+            </Sequence>
+            <!-- 3) 기다리기 (사람이 비켜 줄 시간). Spin 은 쓰지 않는다(머리말 참고) -->
+            <Wait wait_duration="5.0"
+              error_code_id="{wait_error_code}" error_msg="{wait_error_msg}"/>
+          </RoundRobin>
+        </ReactiveFallback>
+      </Sequence>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>
