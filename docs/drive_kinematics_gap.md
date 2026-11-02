@@ -1,5 +1,31 @@
 # 구동 방식 차이: 실물(앞바퀴 조향) vs Gazebo(스키드) vs Nav2 설정
 
+## 2026-11-02 갱신 — 앞바퀴 조향 확정, 반영한 것
+
+사용자 확인: **앞 2바퀴 조향**(서보 DSpower R003B 2개, 바퀴마다 1개) + 인휠 모터 4개, **IMU 없음**.
+서보 가동 180° 중 약 60° 사용 → 바퀴 조향 **±30° 로 가정**(TODO 실측, ±60° 라면 아래 수치가 바뀜).
+
+| 항목 | ±30° | ±60° |
+|---|---|---|
+| 뒷차축 중심 제자리 회전(필요 59.5°) | 불가 | 가능(차체 중심은 반지름 0.23 m 원을 돎) |
+| 최소 회전반경 (뒷차축 중심 / 차체 중심) | 1.07 m / 1.09 m | 0 (단, 0.01~0.54 m 구간은 불가) |
+
+반영:
+1. `robot_base` (새 패키지): `/cmd_vel_safe` → 앞바퀴 각(왼/오 따로, 애커먼)·바퀴 4개 속도 → STM32,
+   STM32 피드백 → `/wheel/odom`(최소제곱), `/estop_state`. 실행할 수 없는 명령(제자리 회전, 너무 급한 곡선)은
+   가장 가까운 실행 가능 명령으로 줄이거나 정지. 펌웨어 규격 `docs/stm32_drive_protocol.md`.
+2. 시뮬레이션: `robot.launch.py sim_steer_limit:=true`(기본) 이면 `steer_sim_node` 가 같은 계산으로
+   Gazebo 스키드 모델에 조향 제한을 씌운다(제자리 회전 불가, 곡률 제한).
+3. Nav2: NavFn → Smac Hybrid-A*(`minimum_turning_radius 1.25`, DUBIN), RPP `use_rotate_to_heading: false`,
+   lookahead 0.9 m, BT 의 Spin 복구 제거, `yaw_goal_tolerance 0.5`, inflation 0.60.
+4. EKF: IMU 가 없으므로 실물은 `ekf_wheel_only.yaml`(바퀴 vx, vy, vyaw). 시뮬은 기존 `ekf.yaml`.
+
+클라우드 시뮬레이션(Jazzy, 조향 제한 ±30°, 앞바퀴 모드): 직진 목표 성공, 장애물 가까운 U턴 목표는
+Safety 앞 0.8 m 정지 구역에 걸려 막힘(후진·제자리 회전이 없어 스스로 못 빠져나옴).
+→ 전시 동선 규칙은 `docs/roboworld_runbook.md`. 후진 복구는 `docs/reverse_recovery_design.md` 조건 충족 후.
+
+---
+
 작성 2026-11-01. 실물 구동 계획은 사용자 설명 기준이다:
 **인휠 모터 4개(구동) + 앞바퀴 조향 서보 2개**. 2026-10-30 프로젝트 메모에는 "4륜 독립 조향(4WIS)"으로
 적혀 있어 서로 다르다. 아래는 앞바퀴 조향(자동차형, Ackermann 계열) 기준이며, 4WIS 로 확정되면

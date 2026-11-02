@@ -36,6 +36,8 @@ setup(
         'console_scripts': [
             # 관찰 전용 진단 노드(구독만 함): Nav2 -> Safety -> 구동 -> EKF 명령 흐름 기록
             'motion_chain_monitor = robot_bringup.motion_chain_monitor:main',
+            # 전시·시연용 지점 저장/이동/순회 (Nav2 /navigate_to_pose)
+            'stations = robot_bringup.stations:main',
         ],
     },
 )

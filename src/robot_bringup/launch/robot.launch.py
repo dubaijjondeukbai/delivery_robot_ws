@@ -84,6 +84,7 @@ def _build_system(context, wiring):
     motion = _boolean(context, 'motion_enabled')
     sim_estop = _boolean(context, 'sim_estop')
     sim_amcl_init = _boolean(context, 'sim_amcl_init')
+    sim_steer_limit = _boolean(context, 'sim_steer_limit')
     rviz = _boolean(context, 'rviz')
 
     if sim and not use_sim_time:
@@ -108,6 +109,12 @@ def _build_system(context, wiring):
     if sim_amcl_init and not sim:
         raise RuntimeError(
             'sim_amcl_init applies only to sim=true'
+        )
+
+    if sim_steer_limit and not sim:
+        raise RuntimeError(
+            'sim_steer_limit applies only to sim=true '
+            '(the real robot limits steering in robot_base base_bridge_node)'
         )
 
     if _boolean(context, 'publish_sensor_tf'):
@@ -248,6 +255,7 @@ def _build_system(context, wiring):
                 f'cameras=1(front_center) '
                 f'sim_estop={sim_estop} '
                 f'sim_amcl_init={sim_amcl_init} '
+                f'sim_steer_limit={sim_steer_limit} '
                 f'rviz={rviz}'
             )
         ),
@@ -268,9 +276,32 @@ def _build_system(context, wiring):
     )
 
     if sim:
+        sim_drive_topic = '/cmd_vel_safe'
+
+        if sim_steer_limit:
+            # 실물 4륜 조향의 조향 범위·조향 속도를 Gazebo 스키드 모델에 씌운다(robot_base/config/base.yaml).
+            sim_drive_topic = '/cmd_vel_sim_steered'
+            actions.append(
+                Node(
+                    package='robot_base',
+                    executable='steer_sim_node',
+                    name='steer_sim_node',
+                    output='screen',
+                    emulate_tty=True,
+                    parameters=[
+                        _share('robot_base', 'config', 'base.yaml'),
+                        clock_parameters,
+                        {
+                            'input_topic': '/cmd_vel_safe',
+                            'output_topic': sim_drive_topic,
+                        },
+                    ],
+                )
+            )
+
         simulation_arguments = {
             'start_description': 'false',
-            'cmd_vel_topic': '/cmd_vel_safe',
+            'cmd_vel_topic': sim_drive_topic,
             'gui': LaunchConfiguration('gui'),
             'world': LaunchConfiguration('world'),
             'spawn_delay_sec': LaunchConfiguration('spawn_delay_sec'),
@@ -359,6 +390,7 @@ def _build_system(context, wiring):
                 'imu_topic',
                 'odom_topic',
                 'map_topic',
+                'ekf_params_file',
             )
         }
 
@@ -524,6 +556,15 @@ def generate_launch_description():
             description=(
                 'Set the AMCL initial pose to the Gazebo spawn pose '
                 '(sim_x/sim_y/sim_yaw); defaults to sim'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'sim_steer_limit',
+            default_value=LaunchConfiguration('sim'),
+            description=(
+                'SIMULATION ONLY: apply the real 4-wheel steering limits '
+                '(robot_base/config/base.yaml max_steer_deg, steer_rate_dps) to the '
+                'Gazebo skid model; defaults to sim, false = old unlimited skid'
             ),
         ),
         DeclareLaunchArgument(

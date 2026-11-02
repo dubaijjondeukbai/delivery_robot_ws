@@ -15,7 +15,11 @@
      robot_safety 가 후진을 차단(max_reverse_velocity: 0.0)하는 동안 BackUp 은 로봇이 서 있는 채로
      time allowance 를 넘겨 실패하고 복구 횟수만 소모한다. 후방 안전 판단을 넣은 뒤 되살린다.
 
-  되돌리기: navigation.launch.py 에 nav_to_pose_bt_xml:='' 를 주면 Nav2 기본 트리를 쓴다.
+  3) 복구 RoundRobin 에서 Spin 제거 (2026-11-02)
+     실물은 앞 2바퀴 조향(±30° 가정)이라 제자리 회전을 할 수 없다(뒷차축 중심 회전에 59.5° 필요).
+
+  되돌리기: navigation.launch.py 에 nav_to_pose_bt_xml:='' 를 주면 Nav2 기본 트리를 쓴다
+  (기본 트리에는 Spin·BackUp 이 있어 이 로봇에서는 복구가 실패한다).
 -->
 <root BTCPP_format="4" main_tree_to_execute="NavigateToPoseWReplanningAndRecovery">
   <BehaviorTree ID="NavigateToPoseWReplanningAndRecovery">
@@ -90,8 +94,11 @@
               <ClearEntireCostmap name="ClearGlobalCostmap-Subtree"
                 service_name="global_costmap/clear_entirely_global_costmap"/>
             </Sequence>
+            <!-- [변경 3] Spin 제거 (2026-11-02): 실물은 앞바퀴 조향 ±30° 라 제자리 회전을 못 한다.
+                 조향 범위가 59.5° 이상(뒷차축 중심 회전 가능)으로 바뀌면 아래 줄을 되살린다.
             <Spin spin_dist="1.57"
               error_code_id="{spin_error_code}" error_msg="{spin_error_msg}"/>
+            -->
             <Wait wait_duration="5.0"
               error_code_id="{wait_error_code}" error_msg="{wait_error_msg}"/>
             <!-- [변경 2] BackUp 제거: robot_safety 가 후진을 허용하면 아래 줄을 되살린다.

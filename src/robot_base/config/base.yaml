@@ -1,0 +1,46 @@
+# robot_base 설정. TODO 가 붙은 값은 실물에서 확인해야 한다. 줄 형식은 docs/stm32_drive_protocol.md.
+#
+# /** 공통값: 실물 연결 노드(base_bridge_node)와 시뮬레이션 조향 제한(steer_sim_node),
+#             가짜 STM32(base.launch.py mock:=true)가 모두 같은 값을 쓴다.
+/**:
+  ros__parameters:
+    # 바퀴 배치 (CAD, robot_description/urdf/robot_params.xacro 와 같은 값) TODO 실측
+    wheel_x: 0.230              # 앞뒤 바퀴 중심 간격의 절반 (축거 0.460)
+    wheel_y: 0.2706             # 좌우 바퀴 중심 간격의 절반 (윤거 0.541)
+    wheel_radius: 0.0857
+    # 조향 방식·한계 (2026-11-02 사용자 확인: 앞 2바퀴 조향, 서보 DSpower R003B 25kg 2개,
+    #   서보 가동 180° 중 약 60° 사용 → 바퀴 조향 ±30° 로 가정. ±60° 라는 뜻이면 60.0 으로)
+    steer_mode: front           # front: 앞 2바퀴 조향·뒷바퀴 0° 고정 / all: 4바퀴 조향
+    max_steer_deg: 30.0         # TODO 실측(링크 비율 때문에 서보 각 ≠ 바퀴 각일 수 있음)
+                                #   front 의 뒷차축 중심 제자리 회전에는 59.5° 필요 → ±30° 는 불가.
+                                #   최소 회전반경(뒷차축 중심) = wheel_y + 2*wheel_x / tan(max_steer)
+                                #   ±30°: 1.07 m (차체 중심 1.09 m) / ±60°: 뒷차축 중심 제자리 회전 가능
+    max_wheel_rpm: 150.0        # TODO 인휠 모터 정격(검증 안 된 값, URDF 와 같음)
+    steer_rate_dps: 180.0       # TODO 조향 서보 속도 [deg/s] (서보 사양·링크 확인)
+    steer_gate_deg: 10.0        # 조향 오차가 이보다 크면 바퀴를 굴리지 않고 조향부터 맞춘다
+
+base_bridge_node:
+  ros__parameters:
+    use_sim_time: false
+    # --- 시리얼 ---------------------------------------------------------------
+    port: /dev/ttyACM0          # TODO 실물 STM32 포트 (ls /dev/ttyACM* /dev/ttyUSB*). 가짜 STM32 = /tmp/ttySTM32
+    baudrate: 115200            # 팀원 stm32_serial_bridge 와 같은 값
+    use_checksum: false         # true 면 줄 끝에 *HH 를 붙인다(펌웨어도 맞춰야 함)
+    # --- 명령 -----------------------------------------------------------------
+    command_mode: wheels        # wheels: Pi 가 4바퀴 조향각·속도 계산(DRV) / body: STM32 가 계산(VEL)
+    control_rate_hz: 20.0       # robot_safety 출력과 같은 주기, 정지 중에도 0 을 계속 보낸다
+    cmd_timeout_sec: 0.3        # /cmd_vel_safe 가 이보다 오래 없으면 0 을 보낸다
+    steer_feedback: true        # FB 의 조향각이 실제 측정값이면 true, 명령값을 돌려주면 false
+    # --- 피드백·E-stop -------------------------------------------------------------
+    fb_timeout_sec: 0.3         # FB 가 이보다 오래 없으면 링크 끊김: 정지 + /estop_state=true
+    estop_source: stm32         # stm32: EST 줄 필수 / link: EST 없이 링크로만 판단(시운전 전용)
+    estop_rate_hz: 10.0
+    estop_timeout_sec: 0.5
+    # --- 팀원 상태기계 연결 (delivery_robot_control) ------------------------------------
+    passthrough_control: true   # /control_command -> STM32, STM32 기타 줄 -> /stm32_status
+
+steer_sim_node:
+  ros__parameters:
+    rate_hz: 50.0
+    input_topic: /cmd_vel_safe
+    output_topic: /cmd_vel_sim_steered

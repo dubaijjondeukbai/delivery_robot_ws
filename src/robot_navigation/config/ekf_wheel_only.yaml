@@ -1,0 +1,44 @@
+# ~/delivery_robot_ws/src/robot_navigation/config/ekf_wheel_only.yaml
+#
+# 2026-11-02: IMU 없이 바퀴 오도메트리만으로 odom -> base_link 를 만드는 실물용 설정.
+#   사용: ros2 launch robot_bringup robot.launch.py ... \
+#           ekf_params_file:=$(ros2 pkg prefix robot_navigation)/share/robot_navigation/config/ekf_wheel_only.yaml
+#
+#   ekf.yaml(기본)과 다른 점: 바퀴 vyaw 를 쓰고 imu0 가 없다.
+#   * 4륜 독립 조향 실물은 바퀴가 회전 중심을 향해 조향되므로 바퀴로 계산한 회전 속도를 쓸 수 있다
+#     (robot_base/base_bridge_node 가 4바퀴 최소제곱으로 vx, vy, wz 를 낸다).
+#   * 시뮬레이션(스키드 근사)에서는 바퀴 회전 속도가 실제의 약 1.5 배라 쓰면 안 된다 → 시뮬은 ekf.yaml.
+#   * IMU 가 생기면 ekf.yaml(바퀴 vx, vy + IMU vyaw)로 돌아간다.
+#   TODO 실물: 제자리 360° 회전 후 /odom yaw 와 실제 회전을 비교해 바퀴 반지름·축거를 보정.
+ekf_filter_node:
+  ros__parameters:
+    use_sim_time: false
+    frequency: 30.0
+    sensor_timeout: 0.2
+    two_d_mode: true
+    transform_time_offset: 0.0
+    transform_timeout: 0.0
+    print_diagnostics: true
+    debug: false
+    publish_tf: true
+    publish_acceleration: false
+    reset_on_time_jump: true
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_link
+    world_frame: odom
+
+    odom0: wheel/odom
+    #             x      y      z
+    #             roll   pitch  yaw
+    #             vx     vy     vz
+    #             vroll  vpitch vyaw
+    #             ax     ay     az
+    odom0_config: [false, false, false,
+                   false, false, false,
+                   true,  true,  false,
+                   false, false, true,
+                   false, false, false]
+    odom0_queue_size: 10
+    odom0_differential: false
+    odom0_relative: false

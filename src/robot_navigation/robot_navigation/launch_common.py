@@ -294,6 +294,14 @@ def declare_common_arguments(
                 '(requires localization launch wiring)'
             ),
         ),
+        DeclareLaunchArgument(
+            'ekf_params_file',
+            default_value=config_path('ekf.yaml'),
+            description=(
+                'robot_localization EKF parameters; ekf.yaml = wheel vx/vy + IMU vyaw '
+                '(simulation and robots with an IMU), ekf_wheel_only.yaml = no IMU'
+            ),
+        ),
     ]
 
     for argument, key in (
@@ -345,7 +353,7 @@ def ekf_node(use_sim_time) -> Node:
         name='ekf_filter_node',
         output='screen',
         parameters=[
-            config_path('ekf.yaml'),
+            LaunchConfiguration('ekf_params_file'),
             {
                 'use_sim_time': ParameterValue(
                     use_sim_time,

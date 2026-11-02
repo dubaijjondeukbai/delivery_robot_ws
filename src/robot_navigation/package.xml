@@ -36,6 +36,7 @@
   <exec_depend>nav2_velocity_smoother</exec_depend>
   <exec_depend>nav2_costmap_2d</exec_depend>
   <exec_depend>nav2_navfn_planner</exec_depend>
+  <exec_depend>nav2_smac_planner</exec_depend>   <!-- 자동차형 전역 계획 (Hybrid-A*) -->
   <exec_depend>nav2_regulated_pure_pursuit_controller</exec_depend>
 
   <!--
