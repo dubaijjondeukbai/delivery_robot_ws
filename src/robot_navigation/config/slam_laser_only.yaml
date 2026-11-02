@@ -1,0 +1,25 @@
+# 바퀴 odom 없이 LiDAR 만으로 지도 만들기 (laser_mapping.launch.py). slam.yaml 위에 덮어쓴다.
+#
+# odom -> base_link 는 고정(움직임 0)으로 두고 slam_toolbox(Karto) 의 스캔 매칭이 움직임을 전부 찾는다.
+#   * 이동 거리로 스캔을 거르면 영영 처리되지 않으므로 거리·방향 기준을 0 으로 하고
+#     시간 기준(minimum_time_interval)으로만 최소 0.2 s 간격으로 처리한다.
+#   * 매번 "직전 위치"에서 찾기 시작하므로 위치 탐색 창을 1.0 m (±0.5 m) 로 넓혔다.
+#     각도 탐색은 slam.yaml 의 coarse_search_angle_offset(±20°) 그대로.
+#     → 처리 한 번 사이에 0.5 m 넘게 움직이거나 20° 넘게 돌면 놓친다. 처리 간격은 CPU 에 따라 늘어난다
+#       (아래 시뮬레이션에서 위치가 실제보다 늦게 나오는 지연: 중앙 0.23 s, 최대 1.1 s).
+#
+# Gazebo 시뮬레이션 결과 (2026-11-03, 720점 10 Hz LiDAR, 바퀴 odom 없음, 33 m 주행):
+#   * 지도: 벽·기둥·부스 위치가 실제 월드와 격자 1~2칸(5~10 cm) 안에서 겹침. 겹친 벽(이중 벽) 없음.
+#   * 멈춘 뒤 위치 오차 1~2 cm, 방향 0.2°.
+#   * 움직이는 동안 (같은 시각끼리 비교): 0.3 m/s 최대 8 cm, 0.5 m/s 최대 26 cm.
+#     제자리 회전(초당 29°·45°) 중에는 방향이 최대 21~25° 늦게 따라왔고, 멈추면 0.2° 로 돌아옴.
+#   → 권장: 0.3 m/s 이하(아주 느린 걸음), 회전은 초당 30° 이하, 모서리·회전 뒤 1~2 초 멈춤.
+#   실제 RPLIDAR A2M12·노트북에서는 시험하지 않았다.
+slam_toolbox:
+  ros__parameters:
+    minimum_travel_distance: 0.0
+    minimum_travel_heading: 0.0
+    minimum_time_interval: 0.2
+    correlation_search_space_dimension: 1.0
+    transform_timeout: 0.5
+    map_update_interval: 2.0

@@ -44,6 +44,41 @@ ros2 launch robot_bringup robot.launch.py nav_mode:=mapping ekf_params_file:=$EK
 ros2 run nav2_map_server map_saver_cli -f ~/maps/roboworld --ros-args -p map_subscribe_transient_local:=true
 ```
 
+### 3-1. 로봇 없이 노트북 + LiDAR 만으로 (바퀴 odom 없이)
+로봇 주행이 아직 안 될 때. LiDAR 를 노트북에 꽂고 카트·의자 위에 올려 밀며 걷는다.
+**시뮬레이션에서만 시험함**(지도는 실제 월드와 5~10 cm 안에서 겹침). 실제 A2M12·노트북·WSL USB 연결은 미확인.
+
+준비 (노트북 WSL, 집에서 한 번):
+* ROS 2 + `sudo apt install ros-$ROS_DISTRO-slam-toolbox ros-$ROS_DISTRO-nav2-map-server ros-$ROS_DISTRO-nav2-bringup`,
+  `sllidar_ros2`, 이 저장소 `colcon build --packages-up-to robot_navigation`
+* LiDAR USB 를 WSL 로 넘기기 (Windows 관리자 PowerShell, usbipd-win):
+  ```powershell
+  winget install usbipd                 # 처음 한 번
+  usbipd list                           # "CP210x" 줄의 BUSID 확인 (예: 2-3)
+  usbipd bind --busid 2-3               # 처음 한 번
+  usbipd attach --wsl --busid 2-3       # LiDAR 를 꽂을 때마다
+  ```
+  WSL 에서 `ls /dev/ttyUSB*` 로 보이면 성공(권한 오류면 `sudo usermod -aG dialout $USER` 후 WSL 다시 시작).
+
+실행 (노트북 WSL):
+```bash
+ros2 launch sllidar_ros2 sllidar_a2m12_launch.py serial_port:=/dev/ttyUSB0 frame_id:=laser_link   # T1
+ros2 launch robot_navigation laser_mapping.launch.py rviz:=true                                    # T2
+# 한 바퀴 돌고 출발점으로 돌아와 몇 초 멈춘 뒤 (T3)
+ros2 run nav2_map_server map_saver_cli -f ~/maps/roboworld --ros-args -p map_subscribe_transient_local:=true
+scp ~/maps/roboworld.yaml ~/maps/roboworld.pgm <pi사용자>@<pi IP>:~/maps/                          # Pi 로 복사
+```
+* **높이**: LiDAR 를 로봇에 달릴 높이와 같게, 수평으로 둔다(기울면 바닥을 벽으로 찍음).
+  URDF 값은 base_link 위 0.70 m — 실물 높이와 맞는지 확인할 것.
+* **속도**(시뮬레이션 근거): 0.3 m/s 이하(2 초에 한 걸음), 회전은 초당 30° 이하, 모서리·회전 뒤 1~2 초 멈춤.
+  0.5 m/s 에서는 움직이는 동안 위치가 최대 26 cm 어긋났다(멈추면 돌아옴).
+* RViz 의 로봇 위치가 실제보다 많이 뒤처지면 멈춰서 따라올 때까지 기다린다. 사람 몸에 가린 곳은
+  반대 방향으로 한 번 더 지나가면 채워진다.
+* 저장 뒤 `roboworld.pgm` 을 열어 벽이 한 줄인지 확인 — 벽이 두 겹이면 더 천천히 다시.
+* A·B·HOME 지점은 이 지도를 쓰는 로봇에서 4 의 순서대로 `stations record` 로 저장한다.
+* 노트북 USB 가 안 되면: LiDAR 를 로봇(Pi)에 단 채 Pi 에서 `laser_mapping.launch.py mount:=robot`
+  (robot.launch.py·base.launch.py 는 끈 상태, 로봇을 손으로 민다. 손으로 밀리는지는 실물 확인 필요).
+
 ## 4. 시연
 ```bash
 ros2 launch robot_bringup robot.launch.py nav_mode:=navigation motion_enabled:=true \
@@ -177,5 +212,7 @@ tmux 창마다 위 T1~T6 을 실행하고, 콘솔(`delivery_console`)과 teleop 
 | 모니터 글자가 네모 | 한글 폰트 없음: `sudo apt install fonts-nanum` |
 | `[Display] 화면을 열 수 없음` | Server: `video` 그룹·다시 로그인 / 데스크톱: `DISPLAY=:0` 붙여서 실행 |
 | 콘솔에 "[상태] 아직 못 받음" | 노트북에서 실행했다면 4-2 의 네트워크 설정, 아니면 Pi 에 SSH 로 들어가서 실행 |
+| 3-1 에서 지도가 안 생김 | `ros2 topic hz /scan` (LiDAR), `frame_id:=laser_link` 를 붙였나, robot.launch.py 가 같이 떠 있지 않나 |
+| 3-1 지도 벽이 두 겹·휘어짐 | 너무 빨리 걸음/돎 → 처음부터 다시, 0.3 m/s·초당 30° 이하, 모서리에서 멈춤 |
 
 기록: `ros2 run robot_bringup motion_chain_monitor --ros-args -p output_file:=$HOME/run_$(date +%H%M).jsonl`

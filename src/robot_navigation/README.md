@@ -39,6 +39,7 @@ robot_navigation/
 │   └── nav2.yaml           # Nav2 서버 전체 (Lyrical / Nav2 1.5 파라미터 이름)
 ├── launch/
 │   ├── mapping.launch.py       # MODE A: static TF + EKF + slam_toolbox
+│   ├── laser_mapping.launch.py # MODE A': 바퀴 odom 없이 LiDAR 만 (노트북에 꽂고 들고 다님, slam_laser_only.yaml)
 │   ├── localization.launch.py  # MODE B: static TF + EKF + map_server + AMCL
 │   └── navigation.launch.py    # MODE B 포함 + Nav2 (+ cmd_vel 라우팅)
 ├── robot_navigation/
@@ -170,6 +171,8 @@ ros2 launch robot_navigation navigation.launch.py --show-args      # 인자 확�
 
 # --- 지도 생성 (MODE A). 다른 터미널에서 teleop/follower 로 로봇을 천천히 몰고 다닌다
 ros2 launch robot_navigation mapping.launch.py
+# --- 바퀴 odom 없이 LiDAR 만 (MODE A'). LiDAR 를 노트북에 꽂고 들고/카트로 0.3 m/s 이하로 걷는다
+ros2 launch robot_navigation laser_mapping.launch.py rviz:=true            # mount:=robot = 로봇에 단 채 손으로 밀기
 
 # --- 지도 저장 (mapping 실행 중인 상태에서)
 mkdir -p ~/maps
