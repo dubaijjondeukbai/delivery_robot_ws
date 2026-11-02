@@ -34,6 +34,7 @@
   <exec_depend>robot_description</exec_depend>  <!-- URDF / TF, always -->
   <exec_depend>robot_sim</exec_depend>          <!-- included when sim:=true -->
   <exec_depend>robot_base</exec_depend>         <!-- steer_sim_node when sim:=true (real robot: base.launch.py) -->
+  <exec_depend>delivery_robot_bridge</exec_depend>  <!-- delivery_demo.launch.py esp32_port:=... (ESP32 bridge) -->
 
   <!-- TODO Future packages
   <exec_depend>robot_safety</exec_depend>

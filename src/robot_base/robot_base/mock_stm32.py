@@ -12,7 +12,8 @@ ROS 가 필요 없다.
 * 0.3 s 동안 DRV/VEL 이 없으면 바퀴를 세운다(워치독). 조향각은 그대로 둔다.
 * FB 50 Hz, EST 10 Hz. --estop-file 파일 내용이 '1' 이면 EST,1 (E-stop 눌림).
 * 팀원 명령: STOP -> ACK,STOP, ESTOP -> STATE,EMERGENCY_STOP (RESET 까지 바퀴 정지)
-  바퀴가 서 있다가 움직이면 DRIVE_MOVING, 멈추면 DRIVE_STOPPED (바뀔 때만).
+  바퀴가 서 있다가 움직이면 DRIVE_MOVING, 멈추면 DRIVE_STOPPED (바뀔 때).
+  STOP 을 받으면 바퀴가 선 뒤 DRIVE_STOPPED 를 한 번 더 보낸다(이미 서 있어도).
 * 2 초마다 가짜 실제 위치(바퀴 상태를 적분한 값)를 표준출력에 찍는다.
 """
 
@@ -50,6 +51,7 @@ class MockStm32:
         self.last_cmd = -1e9
         self.latched = False
         self.moving = False
+        self.stop_reply = False
         self.rx = bytearray()
         self.start = time.monotonic()
         self.pose = [0.0, 0.0, 0.0]
@@ -105,6 +107,7 @@ class MockStm32:
             self.drv_count += 1
         elif head == 'STOP':
             self.target_rpms = [0.0] * 4
+            self.stop_reply = True
             self.send('ACK,STOP')
         elif head == 'ESTOP':
             self.latched = True
@@ -147,6 +150,11 @@ class MockStm32:
         if moving != self.moving:
             self.moving = moving
             self.send('DRIVE_MOVING' if moving else 'DRIVE_STOPPED')
+            if not moving:
+                self.stop_reply = False
+        elif self.stop_reply and not moving:
+            self.stop_reply = False
+            self.send('DRIVE_STOPPED')  # STOP 응답: 이미 서 있어도 한 번
 
     def feedback(self) -> None:
         t_ms = int((time.monotonic() - self.start) * 1000.0) % (2 ** 32)

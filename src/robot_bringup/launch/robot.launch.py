@@ -15,6 +15,10 @@ sim:=true 일 때:
 
 카메라: 전방 중앙 1대(camera_node)만 실행한다. 2대 구성 실행 경로는 두지 않는다
 (enable_camera_2:=true 를 주면 거부). 전환 절차는 robot_vision/config/vision.yaml 주석 참고.
+
+vision (기본 full): full = 카메라 + apriltag/qr/detector/pose/hazard_monitor 전부,
+  qr = 카메라 + qr_node 만 (Pi 4 에서 QR 배달 시연할 때 CPU 절약), none = 비전 노드 없음.
+  Safety 는 비전을 쓰지 않는다(safety.yaml use_vision_hazard: false) — 켜 두었다면 qr/none 금지.
 """
 
 import math
@@ -46,6 +50,20 @@ from robot_navigation.launch_common import (
     declare_common_arguments,
     load_wiring,
 )
+
+# vision:=... 별로 띄울 robot_vision 노드 (camera_node 는 실물에서 none 이 아니면 따로 띄운다)
+VISION_SETS = {
+    'full': (
+        'apriltag_node',
+        'qr_node',
+        'detector_node',
+        'pose_node',
+        # 사람 위험 판정 히스테리시스 + 급접근 주의 신호(관찰용, 모터 제어 없음)
+        'hazard_monitor_node',
+    ),
+    'qr': ('qr_node',),
+    'none': (),
+}
 
 
 def _share(package, *parts):
@@ -86,6 +104,10 @@ def _build_system(context, wiring):
     sim_amcl_init = _boolean(context, 'sim_amcl_init')
     sim_steer_limit = _boolean(context, 'sim_steer_limit')
     rviz = _boolean(context, 'rviz')
+    vision = LaunchConfiguration('vision').perform(context).strip().lower()
+
+    if vision not in VISION_SETS:
+        raise RuntimeError('vision must be full/qr/none')
 
     if sim and not use_sim_time:
         raise RuntimeError(
@@ -321,7 +343,7 @@ def _build_system(context, wiring):
             )
         )
 
-    else:
+    elif vision != 'none':
         # 전방 중앙 카메라 1대. (시뮬레이션에서는 Gazebo 센서가 같은 토픽을 발행한다.)
         actions.append(
             node(
@@ -337,14 +359,7 @@ def _build_system(context, wiring):
         #                       name='camera_node_2'))
         # 시뮬레이션이면 gazebo.xacro 의 camera_2 센서와 bridge.yaml 항목도 함께 추가한다.
 
-    for executable in (
-        'apriltag_node',
-        'qr_node',
-        'detector_node',
-        'pose_node',
-        # 사람 위험 판정 히스테리시스 + 급접근 주의 신호(관찰용, 모터 제어 없음)
-        'hazard_monitor_node',
-    ):
+    for executable in VISION_SETS[vision]:
         actions.append(
             node(
                 'robot_vision',
@@ -571,6 +586,14 @@ def generate_launch_description():
             'rviz',
             default_value='false',
             description='Start RViz (nav2 default view) with use_sim_time',
+        ),
+        DeclareLaunchArgument(
+            'vision',
+            default_value='full',
+            description=(
+                'full = all vision nodes, qr = camera + qr_node only '
+                '(Pi 4 QR delivery demo), none = no vision nodes'
+            ),
         ),
     ]
 

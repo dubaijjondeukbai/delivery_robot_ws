@@ -1,0 +1,27 @@
+# QR 배달 시연 (delivery_demo) 설정. 규칙은 robot_bringup/delivery_logic.py, ESP32 형식은 docs/esp32_lid_protocol.md
+delivery_demo:
+  ros__parameters:
+    use_sim_time: false
+    stations_file: ~/maps/stations.yaml   # `stations record A` 로 만든 지점 (QR 의 A = 지점 이름 A)
+
+    # --- 도착 후 정지 확인 -----------------------------------------------------------
+    require_drive_stopped: true   # STM32 의 DRIVE_STOPPED 도 받아야 정지로 본다(펌웨어가 보내야 함). 시뮬은 false
+    stop_hold_sec: 0.5            # /odom 속도가 아래 값 이하로 이만큼 유지되어야 정지
+    stop_linear_tol: 0.01         # m/s
+    stop_angular_tol: 0.02        # rad/s
+    stop_timeout_sec: 5.0         # 이 안에 정지 확인이 안 되면 ERROR (뚜껑 안 엶)
+    motion_linear_tol: 0.05       # 도착 후 이 속도 이상으로 움직이면 뚜껑 동작 중지 + ERROR
+
+    # --- 뚜껑 ------------------------------------------------------------------------
+    # 2026-11-02: 리미트 스위치 없음(사용자) → 열림은 늘 OPEN_UNCONFIRMED, 닫힘은 CLOSED_UNCONFIRMED 로
+    #   표시된다(성공으로 보지 않음, 운영자가 눈으로 확인). 시연 흐름은 그대로 동작한다.
+    lid_timeout_sec: 30.0         # TODO 스텝모터 열림/닫힘 실제 시간 + 여유
+    require_confirmed_open: true  # true: 리미트 스위치 확인(LID_OPENED)만 성공. 스텝 수만 채우면 OPEN_UNCONFIRMED
+    require_confirmed_close: false  # true 면 닫힘 확인(LID_CLOSED) 없이는 다시 출발하지 않음 → 스위치 없으면 false 유지
+    assume_closed_at_start: true  # ESP32 가 LID_STATE 를 안 보내면 시작할 때 닫혀 있다고 본다(눈으로 확인)
+    auto_close_sec: 0.0           # 열린 뒤 자동으로 닫을 시간(0 = CLOSE QR/명령을 기다림)
+
+    # --- 그 밖 -----------------------------------------------------------------------
+    return_to: ''                 # 닫은 뒤 돌아갈 지점 이름 (예: HOME). 빈 값 = 그 자리에서 대기
+    start_cooldown_sec: 3.0       # 끝난 직후 같은 출발 QR 을 다시 읽어도 무시하는 시간
+    publish_navigation_status: false  # 팀원 상태기계(control_subscriber)에 /navigation_status 를 낼지

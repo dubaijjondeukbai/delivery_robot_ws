@@ -38,6 +38,10 @@ setup(
             'motion_chain_monitor = robot_bringup.motion_chain_monitor:main',
             # 전시·시연용 지점 저장/이동/순회 (Nav2 /navigate_to_pose)
             'stations = robot_bringup.stations:main',
+            # QR 배달 시연: 출발 QR -> Nav2 -> 정지 확인 -> 도착 QR -> ESP32 뚜껑
+            'delivery_demo = robot_bringup.delivery_demo:main',
+            # 가짜 ESP32 뚜껑 (펌웨어 없이 delivery_demo 시험)
+            'mock_lid_esp32 = robot_bringup.mock_lid_esp32:main',
         ],
     },
 )

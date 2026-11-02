@@ -3,10 +3,10 @@
 # ROS 2 Lyrical / Nav2 1.5.1
 #
 # 2026-11-02: 자동차형(제자리 회전 없음)으로 변경
-#   실물: 인휠 모터 4 + 앞 2바퀴 조향(서보 2개), 조향 범위 ±30° 가정 (TODO 실측)
-#   → 제자리 회전 불가(뒷차축 중심 회전에 59.5° 필요), 최소 회전반경 ≈ 1.09 m (차체 중심)
+#   실물: 인휠 모터 4 + 앞 2바퀴 조향(서보 2개), 조향 범위 ±60° (사용자 확인, 바퀴 각 실측 TODO)
+#   → 최소 회전반경 ≈ 0.58 m (차체 중심). 제자리 회전은 뒷차축 중심으로만(59.5° 필요, 여유 0.5°)
 #   (robot_base/config/base.yaml 의 max_steer_deg 와 함께 바꾼다).
-#   * 전역 계획: NavFn(Dijkstra, 회전반경 모름) → Smac Hybrid-A* (minimum_turning_radius 1.25)
+#   * 전역 계획: NavFn(Dijkstra, 회전반경 모름) → Smac Hybrid-A* (minimum_turning_radius 0.7)
 #   * RPP: use_rotate_to_heading false (제자리 회전 금지), lookahead 0.9 m
 #   * inflation_radius 0.55 → 0.60 (footprint 외접원 0.559 보다 커야 Hybrid-A* 충돌 검사가 정상)
 #   * BT: Spin 복구 제거 (behavior_trees/nav_to_pose_replan_on_invalid_path.xml)
@@ -280,10 +280,10 @@ planner_server:
     #   plugin: "nav2_navfn_planner::NavfnPlanner", tolerance: 0.5, use_astar: false
     GridBased:
       plugin: "nav2_smac_planner::SmacPlannerHybrid"
-      # 앞바퀴 조향 ±30° 의 최소 회전반경(차체 중심) 1.09 m + 여유. 조향 범위가 바뀌면 같이 바꾼다:
+      # 앞바퀴 조향 ±60° 의 최소 회전반경(차체 중심) 0.58 m + 여유. 조향 범위가 바뀌면 같이 바꾼다:
       #   뒷차축 중심 R = wheel_y + 2*wheel_x / tan(max_steer) = 0.2706 + 0.460 / tan(max_steer)
-      #   차체 중심 = hypot(R, wheel_x).  ±30° → 1.09 m, ±45° → 0.78 m
-      # 경로를 실물 한계(1.09)보다 완만하게 만들어 추종 오차를 바로잡을 여유를 둔다.
+      #   차체 중심 = hypot(R, wheel_x).  ±30° → 1.09 m, ±45° → 0.78 m, ±60° → 0.58 m
+      # 경로를 실물 한계보다 완만하게 만들어 추종 오차를 바로잡을 여유를 둔다.
       minimum_turning_radius: 0.7
       motion_model_for_search: "DUBIN"   # 전진만(후진 금지). 후진을 허용하면 REEDS_SHEPP
       tolerance: 0.25
