@@ -284,7 +284,7 @@ planner_server:
       #   뒷차축 중심 R = wheel_y + 2*wheel_x / tan(max_steer) = 0.2706 + 0.460 / tan(max_steer)
       #   차체 중심 = hypot(R, wheel_x).  ±30° → 1.09 m, ±45° → 0.78 m
       # 경로를 실물 한계(1.09)보다 완만하게 만들어 추종 오차를 바로잡을 여유를 둔다.
-      minimum_turning_radius: 1.25
+      minimum_turning_radius: 0.7
       motion_model_for_search: "DUBIN"   # 전진만(후진 금지). 후진을 허용하면 REEDS_SHEPP
       tolerance: 0.25
       allow_unknown: true
