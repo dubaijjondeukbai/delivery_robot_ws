@@ -49,7 +49,10 @@ ros2 run nav2_map_server map_saver_cli -f ~/maps/roboworld --ros-args -p map_sub
 ros2 launch robot_bringup robot.launch.py nav_mode:=navigation motion_enabled:=true \
   map:=$HOME/maps/roboworld.yaml ekf_params_file:=$EKF_WHEEL                               # T3
 ```
-1. 처음 위치: RViz `2D Pose Estimate` (또는 `set_initial_pose:=true initial_pose_x:=… y:=… yaw:=…`).
+1. 처음 위치: **출발점을 바닥에 테이프로 표시**하고, 처음 한 번만 RViz `2D Pose Estimate` 로 맞춘 뒤
+   `ros2 run robot_bringup stations record HOME` 으로 저장한다. 그다음부터는 로봇을 테이프 위에 두고
+   T3 에 `initial_station:=HOME` 을 붙이면 켜질 때 위치가 맞춰진다(RViz 필요 없음).
+   실행 중에 다시 맞출 때(로봇을 들어서 옮겼을 때): `ros2 run robot_bringup stations init HOME`.
 2. 지점 저장: 로봇을 시연 동선대로 손으로/teleop 으로 몰면서 지점마다
    `ros2 run robot_bringup stations record p1` … `p4`. **방향 = 지나가는 방향**으로 저장.
    (teleop 은 Nav2 와 같은 `/cmd_vel_auto` 를 쓰므로, 지점 저장할 때는 `nav_mode:=localization`
@@ -73,8 +76,9 @@ QR 내용(문자열 그대로 QR 코드로 만든다): `START:A` (A 로 출발),
 지점 이름 = QR 의 A/B (영문·숫자·`_`·`-`, 40자 이내).
 
 ```bash
-# 준비: 4 의 T3 대신 (Pi 4 이므로 vision:=qr)
+# 준비: 4 의 T3 대신 (Pi 4 이므로 vision:=qr, 실제 카메라 camera:=true, 뚜껑 인터록, 출발점 HOME)
 ros2 launch robot_bringup robot.launch.py nav_mode:=navigation motion_enabled:=true vision:=qr \
+  camera:=true lid_interlock:=true initial_station:=HOME \
   map:=$HOME/maps/roboworld.yaml ekf_params_file:=$EKF_WHEEL                               # T3
 # 지점 저장 (처음 한 번): 로봇을 A 위치·도착 방향으로 놓고
 ros2 run robot_bringup stations record A        # B 도 같은 방법. ~/maps/stations.yaml 에 저장
@@ -107,7 +111,11 @@ Pi 모니터 화면(`display:=true`, `delivery_display`): 미션 상태를 한�
 * `ERROR` 가 나면: 원인 해결 → 뚜껑이 열려 있거나 상태가 `UNKNOWN` 이면 `CLOSE` → `RESET`.
   RESET 은 뚜껑을 닫혔다고 가정하지 않는다(뚜껑이 닫힘이 아니면 START 를 거부하고 CLOSE 를 안내).
 * ESP32 를 켜기 전에 뚜껑을 손으로 닫아 둔다(스위치가 없어 켜질 때 닫혀 있다고 본다).
-* 뚜껑이 열린 채로는 수동 조종(teleop)을 하지 않는다(LiDAR 뒤쪽이 가려짐, 시연 노드는 막지 못함).
+* **뚜껑 인터록** (`lid_interlock:=true`): 시연 노드가 뚜껑을 닫힘으로 알고 있을 때만 Safety 가 바퀴를
+  움직이게 한다. 열림·여닫는 중·모름이면 teleop·Nav2 명령 모두 `STOP:lid_open`.
+  `delivery_demo` 가 안 떠 있으면 `STOP:waiting_for_lid_state`(먼저 T5 를 띄운다).
+  뚜껑 모터가 고장 나 CLOSE 가 안 되면: 손으로 닫고 T5(`delivery_demo`)를 다시 시작(켜질 때 닫힘으로 봄).
+  지도 만들기·벤치 시험처럼 시연 노드 없이 움직일 때는 `lid_interlock` 을 빼고 실행한다.
 
 펌웨어 없이 먼저 시험 (가짜 뚜껑, 시뮬):
 ```bash
@@ -150,6 +158,10 @@ tmux 창마다 위 T1~T6 을 실행하고, 콘솔(`delivery_console`)과 teleop 
 | `뚜껑이 닫혀 있지 않아 출발하지 않음` | `CLOSE` 로 닫기(복구용, IDLE 에서도 됨) 후 다시 `START` |
 | `등록되지 않은 지점: A` | `stations record A` 안 함 / `~/maps/stations.yaml` 확인 (START 때마다 다시 읽음) |
 | 뚜껑이 안 움직이고 시간 초과 | ESP32 포트(`esp32_port`), 펌웨어가 `LID_*` 를 아는지, 시리얼 터미널로 `LID_OPEN` 직접 시험 |
+| `STOP:waiting_for_lid_state` / `STOP:lid_state_timeout` | `lid_interlock:=true` 인데 `delivery_demo` 가 안 떠 있음 |
+| `STOP:lid_open` | 뚜껑이 닫힘이 아님 → `CLOSE` (모터 고장이면 손으로 닫고 `delivery_demo` 재시작) |
+| `initial_station 'HOME' is not in ...` | `stations record HOME` 을 먼저 (2D Pose Estimate 로 맞춘 뒤) |
+| 카메라 화면이 검정, QR 안 읽힘 | T3 에 `camera:=true` 를 안 붙임 |
 | 모니터에 "연결 대기" | `delivery_demo` 가 안 떠 있음 / 다른 `ROS_DOMAIN_ID` |
 | 모니터 위 띠 "Safety 신호 없음" | `robot.launch.py` 가 안 떠 있음 |
 | 모니터 글자가 네모 | 한글 폰트 없음: `sudo apt install fonts-nanum` |

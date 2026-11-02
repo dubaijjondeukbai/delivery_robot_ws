@@ -44,3 +44,16 @@ def test_parse_args_strips_ros_args():
     assert args.loop
     assert args.status
     assert stations.parse_args(['--no-status', 'go', 'a']).status is False
+
+
+def test_initial_pose_message_and_init_command():
+    msg = stations.initial_pose_message({'x': 1.5, 'y': -0.5, 'yaw': math.pi / 2})
+    assert msg.header.frame_id == 'map'
+    assert msg.header.stamp.sec == 0 and msg.header.stamp.nanosec == 0   # AMCL 이 최신 TF 사용
+    assert msg.pose.pose.position.x == 1.5 and msg.pose.pose.position.y == -0.5
+    q = msg.pose.pose.orientation
+    assert stations.quaternion_to_yaw(q.x, q.y, q.z, q.w) == pytest.approx(math.pi / 2)
+    assert msg.pose.covariance[0] == pytest.approx(0.0625)
+    assert msg.pose.covariance[7] == pytest.approx(0.0625)
+    assert msg.pose.covariance[35] == pytest.approx(math.radians(15.0) ** 2)
+    assert stations.parse_args(['init', 'HOME']).name == 'HOME'

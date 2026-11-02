@@ -69,6 +69,15 @@ safety_manager_node:
     vision_hazard_topic: /vision/person_hazard
     vision_hazard_timeout_sec: 0.5
 
+    # 선택 입력: 뚜껑 인터록(robot_bringup delivery_demo 가 /delivery/lid_closed Bool 을 10 Hz 로 발행).
+    # 기본 false. QR 시연 때 robot.launch.py lid_interlock:=true 로 켠다. 켜면:
+    #   * False(열림·움직이는 중·모름) → STOP:lid_open (teleop·Nav2 명령 모두 막음)
+    #   * delivery_demo 가 안 떠 있거나 lid_state_timeout_sec 이상 끊기면 STOP:lid_state_timeout
+    # 리미트 스위치가 없으므로 "닫힘"은 시연 노드가 닫기 동작을 마쳤다는 뜻이다(센서 확인 아님).
+    use_lid_interlock: false
+    lid_closed_topic: /delivery/lid_closed
+    lid_state_timeout_sec: 1.0
+
 
 lidar_obstacle_node:
   ros__parameters:

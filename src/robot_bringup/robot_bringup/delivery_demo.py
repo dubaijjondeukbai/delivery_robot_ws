@@ -16,6 +16,7 @@ QR 배달 시연 노드 (로보월드): 출발 QR → Nav2 이동 → 정지 확
     /control_command    STOP (도착 시 STM32 정지 요청, base_bridge_node 경유)
     /esp32_command      LID_OPEN / LID_CLOSE / LID_STOP (ESP32 브리지 경유)
     /delivery/state     상태 JSON (바뀔 때 + 1 초마다)
+    /delivery/lid_closed  Bool 10 Hz, 뚜껑이 닫힘(확인 안 된 닫힘 포함)인지 → robot_safety 뚜껑 인터록
 
 상태기계 규칙은 delivery_logic.py. ESP32 줄 형식은 docs/esp32_lid_protocol.md.
 """
@@ -37,7 +38,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from robot_bringup import delivery_logic as logic
 from robot_bringup.stations import load_stations, yaw_to_quaternion
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 
 
 class DeliveryDemo(Node):
@@ -49,6 +50,7 @@ class DeliveryDemo(Node):
             'qr_topic': '/vision/qr_result',
             'command_topic': '/delivery/command',
             'state_topic': '/delivery/state',
+            'lid_closed_topic': '/delivery/lid_closed',
             'esp32_command_topic': '/esp32_command',
             'esp32_status_topic': '/esp32_status',
             'control_command_topic': '/control_command',
@@ -93,6 +95,7 @@ class DeliveryDemo(Node):
         self.control_pub = self.create_publisher(String, self.p['control_command_topic'], 10)
         self.esp32_pub = self.create_publisher(String, self.p['esp32_command_topic'], 10)
         self.state_pub = self.create_publisher(String, self.p['state_topic'], 10)
+        self.lid_closed_pub = self.create_publisher(Bool, self.p['lid_closed_topic'], 10)
         self.nav_status_pub = self.create_publisher(String, '/navigation_status', 10)
         self.create_subscription(String, self.p['qr_topic'], self._on_text, 10)
         self.create_subscription(String, self.p['command_topic'], self._on_text, 10)
@@ -307,6 +310,9 @@ class DeliveryDemo(Node):
             self._run(actions)
         elif now - self.last_heartbeat >= 1.0:
             self._publish_state(force=True)
+        # 뚜껑 인터록(robot_safety): 닫힘(확인 안 된 닫힘 포함)일 때만 True. 10 Hz 로 계속 낸다.
+        self.lid_closed_pub.publish(Bool(data=self.machine.lid in (
+            logic.LID_CLOSED, logic.LID_CLOSED_UNCONFIRMED)))
 
     def _publish_state(self, force: bool = False) -> None:
         snapshot = self.machine.snapshot()

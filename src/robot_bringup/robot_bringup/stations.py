@@ -7,6 +7,8 @@
     ros2 run robot_bringup stations go booth_a            # booth_a 로 이동 (Ctrl+C = 취소)
     ros2 run robot_bringup stations tour booth_a booth_b --loop --dwell 5
     ros2 run robot_bringup stations remove booth_a
+    ros2 run robot_bringup stations init HOME             # 로봇이 HOME 에 있다고 AMCL 에 알림
+                                                          # (RViz 2D Pose Estimate 대신)
 
 * 저장 파일: --file (기본 ~/maps/stations.yaml). 지점은 map 좌표(x, y, yaw)라 지도를 새로 만들면
   다시 저장해야 한다.
@@ -28,7 +30,7 @@ import time
 from typing import Dict, List, Optional, Tuple
 
 from action_msgs.msg import GoalStatus
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 from nav2_msgs.action import NavigateToPose
 import rclpy
 from rclpy.action import ActionClient
@@ -108,6 +110,23 @@ def status_for_safety(state: str, navigating: bool, obstacle_reported: bool) -> 
     return None
 
 
+def initial_pose_message(pose: Dict[str, float], xy_std: float = 0.25,
+                         yaw_std_deg: float = 15.0) -> PoseWithCovarianceStamped:
+    """AMCL /initialpose 메시지 (RViz 2D Pose Estimate 와 같은 형식)."""
+    msg = PoseWithCovarianceStamped()
+    msg.header.frame_id = 'map'
+    # stamp 0 = AMCL 이 최신 TF 를 쓴다(시뮬 시간/실제 시간 어느 쪽이든 동작)
+    msg.pose.pose.position.x = float(pose['x'])
+    msg.pose.pose.position.y = float(pose['y'])
+    (msg.pose.pose.orientation.x, msg.pose.pose.orientation.y,
+     msg.pose.pose.orientation.z, msg.pose.pose.orientation.w) = yaw_to_quaternion(pose['yaw'])
+    covariance = [0.0] * 36
+    covariance[0] = covariance[7] = xy_std ** 2
+    covariance[35] = math.radians(yaw_std_deg) ** 2
+    msg.pose.covariance = covariance
+    return msg
+
+
 def strip_ros_args(argv: List[str]) -> List[str]:
     if '--ros-args' in argv:
         return argv[:argv.index('--ros-args')]
@@ -131,6 +150,42 @@ class StationClient(Node):
         self.obstacle_reported = False
         self.safety_state = ''
         self.last_print = 0.0
+        self.initial_pose_pub = self.create_publisher(
+            PoseWithCovarianceStamped, '/initialpose', 10)
+
+    def set_initial_pose(self, name: str, pose: Dict[str, float]) -> bool:
+        """AMCL 에 '지금 로봇이 이 지점에 있다'고 알리고, 위치가 바뀌었는지 확인한다."""
+        deadline = time.monotonic() + 10.0
+        while self.initial_pose_pub.get_subscription_count() == 0:
+            if time.monotonic() > deadline:
+                print('[stations] /initialpose 를 받는 노드(AMCL)가 없음 '
+                      '(nav_mode:=localization 또는 navigation 으로 실행했나요?)')
+                return False
+            rclpy.spin_once(self, timeout_sec=0.1)
+        msg = initial_pose_message(pose)
+        for _ in range(3):  # 하나가 유실돼도 되게 몇 번 보낸다(AMCL 은 받을 때마다 다시 퍼뜨림)
+            self.initial_pose_pub.publish(msg)
+            end = time.monotonic() + 0.3
+            while time.monotonic() < end:
+                rclpy.spin_once(self, timeout_sec=0.05)
+        print(f"[stations] 초기 위치 = {name}: x={pose['x']:.2f} y={pose['y']:.2f} "
+              f"yaw={math.degrees(pose['yaw']):.0f}deg", flush=True)
+        end = time.monotonic() + 3.0
+        current = None
+        while time.monotonic() < end:
+            current = self.current_pose(timeout=0.5)
+            if current is not None and \
+                    math.hypot(current[0] - pose['x'], current[1] - pose['y']) < 0.3:
+                break
+        if current is None:
+            print('[stations] map -> base_link TF 를 아직 못 받음: 잠시 뒤 stations where 로 확인')
+            return True
+        error = math.hypot(current[0] - pose['x'], current[1] - pose['y'])
+        print(f'[stations] AMCL 위치: x={current[0]:.2f} y={current[1]:.2f} '
+              f'yaw={math.degrees(current[2]):.0f}deg (지점과 {error:.2f} m 차이)')
+        if error >= 0.3:
+            print('[stations] 아직 지점과 다름: 로봇이 정말 그 자리에 있는지 확인하세요')
+        return True
 
     def _status(self, text: str) -> None:
         print(f'  -> /navigation_status {text}', flush=True)
@@ -242,6 +297,8 @@ def parse_args(argv: List[str]) -> argparse.Namespace:
     remove.add_argument('name')
     go = sub.add_parser('go')
     go.add_argument('name')
+    init = sub.add_parser('init', help='로봇이 이 지점에 있다고 AMCL 에 알림(초기 위치)')
+    init.add_argument('name')
     tour = sub.add_parser('tour')
     tour.add_argument('names', nargs='+')
     tour.add_argument('--loop', action='store_true')
@@ -275,7 +332,7 @@ def run(args: argparse.Namespace) -> int:
         print('지점 이름은 영문/숫자/_/- 40자 이내')
         return 1
     targets = []
-    if args.command == 'go':
+    if args.command in ('go', 'init'):
         targets = [args.name]
     elif args.command == 'tour':
         targets = list(args.names)
@@ -303,6 +360,8 @@ def run(args: argparse.Namespace) -> int:
 
         if args.command == 'go':
             return 0 if node.go(args.name, stations[args.name]) else 2
+        if args.command == 'init':
+            return 0 if node.set_initial_pose(args.name, stations[args.name]) else 2
 
         rounds = 0
         while True:

@@ -16,6 +16,11 @@ sim:=true 일 때:
 카메라: 전방 중앙 1대(camera_node)만 실행한다. 2대 구성 실행 경로는 두지 않는다
 (enable_camera_2:=true 를 주면 거부). 전환 절차는 robot_vision/config/vision.yaml 주석 참고.
 
+camera:=true: 실제 카메라(robot.yaml 의 use_camera: false = 검은 시험 영상을 덮어씀). Pi 에서는 꼭 붙인다.
+initial_station:=HOME: stations.yaml 의 HOME 을 AMCL 초기 위치로 (로봇을 그 자리에 두고 켠다).
+  실행 중에 다시 맞출 때는 ros2 run robot_bringup stations init HOME.
+lid_interlock:=true: 뚜껑이 닫힘이 아니면 Safety 가 바퀴를 세운다(QR 시연, delivery_demo 필요).
+
 vision (기본 full): full = 카메라 + apriltag/qr/detector/pose/hazard_monitor 전부,
   qr = 카메라 + qr_node 만 (Pi 4 에서 QR 배달 시연할 때 CPU 절약), none = 비전 노드 없음.
   Safety 는 비전을 쓰지 않는다(safety.yaml use_vision_hazard: false) — 켜 두었다면 qr/none 금지.
@@ -105,9 +110,27 @@ def _build_system(context, wiring):
     sim_steer_limit = _boolean(context, 'sim_steer_limit')
     rviz = _boolean(context, 'rviz')
     vision = LaunchConfiguration('vision').perform(context).strip().lower()
+    camera = _boolean(context, 'camera')
+    lid_interlock = _boolean(context, 'lid_interlock')
+    initial_station = LaunchConfiguration('initial_station').perform(context).strip()
 
     if vision not in VISION_SETS:
         raise RuntimeError('vision must be full/qr/none')
+
+    station_pose = None
+    if initial_station:
+        if mode not in ('localization', 'navigation'):
+            raise RuntimeError(
+                'initial_station applies only to nav_mode=localization/navigation'
+            )
+        from robot_bringup.stations import load_stations
+        stations_path = LaunchConfiguration('stations_file').perform(context)
+        station_pose = load_stations(stations_path).get(initial_station)
+        if station_pose is None:
+            raise RuntimeError(
+                f'initial_station {initial_station!r} is not in {stations_path} '
+                f'(save it first: ros2 run robot_bringup stations record {initial_station})'
+            )
 
     if sim and not use_sim_time:
         raise RuntimeError(
@@ -230,6 +253,8 @@ def _build_system(context, wiring):
         'robot_safety',
         'safety_manager_node',
         safety_config,
+        # lid_interlock:=true: 뚜껑이 닫힘이 아니면 정지 (QR 시연 delivery_demo 가 상태를 낸다)
+        overrides={'use_lid_interlock': True} if lid_interlock else None,
         remappings=[
             ('/cmd_vel_auto', auto_topic),
         ],
@@ -278,7 +303,11 @@ def _build_system(context, wiring):
                 f'sim_estop={sim_estop} '
                 f'sim_amcl_init={sim_amcl_init} '
                 f'sim_steer_limit={sim_steer_limit} '
-                f'rviz={rviz}'
+                f'rviz={rviz} '
+                f'vision={vision} '
+                f'camera={"real" if camera else "test_pattern(robot.yaml)"} '
+                f'initial_station={initial_station or "-"} '
+                f'lid_interlock={lid_interlock}'
             )
         ),
     ] + handlers + [
@@ -345,11 +374,13 @@ def _build_system(context, wiring):
 
     elif vision != 'none':
         # 전방 중앙 카메라 1대. (시뮬레이션에서는 Gazebo 센서가 같은 토픽을 발행한다.)
+        # camera:=true 면 robot.yaml 의 use_camera(false = 검은 시험 영상)를 덮어써 실제 카메라를 쓴다.
         actions.append(
             node(
                 'robot_vision',
                 'camera_node',
                 vision_config,
+                overrides={'use_camera': True} if camera else None,
             )
         )
 
@@ -419,7 +450,27 @@ def _build_system(context, wiring):
                 ),
             })
 
-        if sim and sim_amcl_init and mode in ('localization', 'navigation'):
+        if station_pose is not None:
+            # 저장한 지점(예: 바닥에 테이프로 표시한 출발점 HOME)을 AMCL 초기 위치로 쓴다.
+            navigation_arguments.update({
+                'set_initial_pose': 'true',
+                'initial_pose_x': str(station_pose['x']),
+                'initial_pose_y': str(station_pose['y']),
+                'initial_pose_z': '0.0',
+                'initial_pose_yaw': str(station_pose['yaw']),
+            })
+            actions.append(
+                LogInfo(
+                    msg=(
+                        f'[Master] initial_station={initial_station}: AMCL initial pose '
+                        f"x={station_pose['x']:.2f} y={station_pose['y']:.2f} "
+                        f"yaw={math.degrees(station_pose['yaw']):.0f}deg "
+                        '(the robot must be standing on that spot)'
+                    )
+                )
+            )
+
+        elif sim and sim_amcl_init and mode in ('localization', 'navigation'):
             # Gazebo 스폰 위치 = map 좌표라는 가정(지도를 기본 스폰 위치에서 만든 경우).
             # 2D Pose Estimate 를 누를 필요가 없고, 목표 실행 중 위치 재설정도 필요 없다.
             navigation_arguments.update({
@@ -594,6 +645,35 @@ def generate_launch_description():
                 'full = all vision nodes, qr = camera + qr_node only '
                 '(Pi 4 QR delivery demo), none = no vision nodes'
             ),
+        ),
+        DeclareLaunchArgument(
+            'camera',
+            default_value='false',
+            description=(
+                'true = real camera (overrides use_camera in robot.yaml); '
+                'false = robot.yaml setting (test pattern)'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'initial_station',
+            default_value='',
+            description=(
+                'Station name (stations_file) used as the AMCL initial pose, '
+                'e.g. HOME marked on the floor; empty = not set'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'lid_interlock',
+            default_value='false',
+            description=(
+                'true = robot_safety stops the wheels unless /delivery/lid_closed is True '
+                '(QR demo; needs delivery_demo running)'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'stations_file',
+            default_value=os.path.join('~', 'maps', 'stations.yaml'),
+            description='Stations file written by: ros2 run robot_bringup stations record',
         ),
     ]
 

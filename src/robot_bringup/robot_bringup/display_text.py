@@ -27,6 +27,9 @@ SAFETY_TEXT = {
     'obstacle_state_timeout': ('LiDAR 신호 끊김', False, 'error'),
     'waiting_for_obstacle_state': ('LiDAR 신호 대기 중', False, 'warn'),
     'vision_hazard': ('사람이 가까이 있어 멈췄습니다', True, 'warn'),
+    'lid_open': ('뚜껑이 닫혀 있지 않아 주행을 막았습니다', True, 'warn'),
+    'lid_state_timeout': ('뚜껑 상태 신호 끊김: delivery_demo 확인', False, 'error'),
+    'waiting_for_lid_state': ('뚜껑 상태 신호 대기 중: delivery_demo 확인', False, 'warn'),
 }
 
 MOVING_STATES = ('NAVIGATING', 'RETURNING')

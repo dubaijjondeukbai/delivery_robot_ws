@@ -8,6 +8,7 @@
 /estop_state               std_msgs/msg/Bool
 /safety/obstacle_detected   std_msgs/msg/Bool
 /vision/person_hazard      std_msgs/msg/Bool   (use_vision_hazard=true 일 때만, 기본 false)
+/delivery/lid_closed       std_msgs/msg/Bool   (use_lid_interlock=true 일 때만, 기본 false)
 
 출력
 ----
@@ -25,6 +26,8 @@
 7. 후방 안전 판단을 구현하기 전까지 후진은 기본 금지한다.
 8. 비전 위험 입력은 선택(use_vision_hazard). 켜면 정지 사유만 추가하며 LiDAR/E-stop 판단을
    대신하지 않는다. True 를 받는 즉시 정지하고, 입력이 끊기면 정지한다(모름 = 정지).
+9. 뚜껑 인터록은 선택(use_lid_interlock). 켜면 뚜껑이 닫힘(True)이 아닐 때와 입력이 끊겼을 때
+   정지한다. 열린 뚜껑이 LiDAR 뒤쪽을 가리고 짐이 떨어질 수 있으므로 열린 채 주행하지 않는다.
 
 통신 조건
 ---------
@@ -66,6 +69,9 @@ class SafetyManagerNode(Node):
         'waiting_for_vision_hazard',
         'vision_hazard_timeout',
         'vision_hazard',
+        'waiting_for_lid_state',
+        'lid_state_timeout',
+        'lid_open',
     ))
 
     def __init__(self):
@@ -92,6 +98,10 @@ class SafetyManagerNode(Node):
             'use_vision_hazard': False,
             'vision_hazard_topic': '/vision/person_hazard',
             'vision_hazard_timeout_sec': 0.5,
+            # 선택: 뚜껑 인터록(robot_bringup delivery_demo 가 발행). 기본 사용 안 함.
+            'use_lid_interlock': False,
+            'lid_closed_topic': '/delivery/lid_closed',
+            'lid_state_timeout_sec': 1.0,
         }
 
         for name, value in defaults.items():
@@ -137,6 +147,14 @@ class SafetyManagerNode(Node):
         )
         vision_topic = self._topic_parameter('vision_hazard_topic')
 
+        self.use_lid_interlock = self.get_parameter('use_lid_interlock').value
+        if not isinstance(self.use_lid_interlock, bool):
+            raise ValueError('use_lid_interlock must be a bool')
+        self.lid_state_timeout_sec = self._number_parameter(
+            'lid_state_timeout_sec'
+        )
+        lid_topic = self._topic_parameter('lid_closed_topic')
+
         # 입력과 출력이 같은 토픽으로 연결되는 피드백을 방지한다.
         if self.resolve_topic_name(cmd_topic) == (
             self.resolve_topic_name(safe_topic)
@@ -162,11 +180,13 @@ class SafetyManagerNode(Node):
         self.estop_active = True
         self.obstacle_detected = True
         self.vision_hazard = True
+        self.lid_closed = False
 
         # None이면 아직 해당 입력을 받지 않은 상태다.
         self._last_estop_time = None
         self._last_obstacle_time = None
         self._last_vision_time = None
+        self._last_lid_time = None
         self._last_cmd_time = None
 
         self._latest_auto_cmd = None
@@ -246,6 +266,16 @@ class SafetyManagerNode(Node):
                 input_qos,
             )
 
+        # 뚜껑 인터록 입력도 켰을 때만 구독한다.
+        self.lid_sub = None
+        if self.use_lid_interlock:
+            self.lid_sub = self.create_subscription(
+                Bool,
+                lid_topic,
+                self.lid_closed_callback,
+                input_qos,
+            )
+
         # 기본 실행 방식에서는 모든 콜백이 순서대로 처리된다.
         self.control_timer = self.create_timer(
             1.0 / self.control_rate_hz,
@@ -261,7 +291,9 @@ class SafetyManagerNode(Node):
             f'obstacle_timeout={self.obstacle_timeout_sec:.2f} s | '
             f'estop_timeout={self.estop_timeout_sec:.2f} s | '
             f'vision_hazard='
-            f'{vision_topic if self.use_vision_hazard else "off"}'
+            f'{vision_topic if self.use_vision_hazard else "off"} | '
+            f'lid_interlock='
+            f'{lid_topic if self.use_lid_interlock else "off"}'
         )
 
         # 시작 직후부터 정지 명령을 출력한다.
@@ -350,6 +382,18 @@ class SafetyManagerNode(Node):
 
         elif self.use_vision_hazard and self.vision_hazard:
             reason = 'vision_hazard'
+
+        elif self.use_lid_interlock and self._last_lid_time is None:
+            reason = 'waiting_for_lid_state'
+
+        elif (
+            self.use_lid_interlock
+            and now - self._last_lid_time >= self.lid_state_timeout_sec
+        ):
+            reason = 'lid_state_timeout'
+
+        elif self.use_lid_interlock and not self.lid_closed:
+            reason = 'lid_open'
 
         else:
             reason = ''
@@ -465,6 +509,20 @@ class SafetyManagerNode(Node):
         self._last_vision_time = now
 
         # True 를 받은 그 콜백에서 바로 정지 명령을 낸다(다음 타이머를 기다리지 않음).
+        self.publish_safe_command()
+
+    # ======================================================
+    # 뚜껑 닫힘 콜백 (use_lid_interlock=true 일 때만 구독)
+    # ======================================================
+    def lid_closed_callback(self, msg):
+        now = self._now()
+
+        self._check_safety(now)
+
+        self.lid_closed = bool(msg.data)
+        self._last_lid_time = now
+
+        # 열림(False)을 받은 그 콜백에서 바로 정지 명령을 낸다.
         self.publish_safe_command()
 
     # ======================================================
