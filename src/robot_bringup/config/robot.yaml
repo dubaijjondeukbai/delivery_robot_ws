@@ -6,7 +6,11 @@
 # (robot_vision/config/vision.yaml 의 '(비활성) 2번 카메라' 주석 참고).
 camera_node:
   ros__parameters:
-    use_camera: false
+    use_camera: true
+
+#camera_node_2:
+  #ros__parameters:
+    #use_camera: false
 
 apriltag_node:
   ros__parameters:
